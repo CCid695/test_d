@@ -1,0 +1,2 @@
+google-genai>=0.3.0
+docker>=7.0.0
