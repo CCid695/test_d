@@ -1,1 +1,6 @@
 .*/
+!.github/
+.env
+.install_manifest
+.ollama_serve.log
+.ollama_serve.pid

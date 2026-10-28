@@ -1,19 +1,21 @@
-"""Mini Devin: Gemini controls a local Docker sandbox container via function calling.
+"""Mini Devin: a local Ollama model controls a local Docker sandbox container via tool calling.
 
 Usage:
-    export GEMINI_API_KEY=your_key
-    python mini_devin.py "write a webpage and run it"
+    python3 mini_devin.py "write a webpage and run it"
 
-Requires Docker Desktop / Docker Engine to be installed and running locally.
+Requires:
+    - Docker Desktop / Docker Engine running locally
+    - Ollama running locally (http://localhost:11434) with OLLAMA_MODEL pulled
 """
 
 import io
+import json
 import os
 import sys
 import tarfile
 
 import docker
-from google import genai
+from openai import OpenAI
 
 
 def _load_dotenv(path):
@@ -30,13 +32,20 @@ def _load_dotenv(path):
 
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# qwen2.5:3b is the smallest Ollama model that still has usable tool-calling
+# support for this kind of multi-step task. Below 3b, tool-call formatting
+# gets unreliable; bump to qwen2.5:7b (OLLAMA_MODEL env var) if 3b misbehaves.
+MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+MAX_STEPS = 10
+
 CONTAINER_NAME = "mini-devin-sandbox"
 IMAGE = "python:3.11-slim"
 HOST_PORT = 8000
 CONTAINER_PORT = "8000/tcp"
 
 docker_client = docker.from_env()
+llm_client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")  # api_key is unused by Ollama
 
 
 def get_container():
@@ -62,14 +71,6 @@ def start_sandbox():
 
 
 def run_command(command: str) -> str:
-    """Execute a shell command inside the Docker sandbox container and return its output.
-
-    To start a long-running service in the background (e.g. a web server), append `&`
-    to the command and redirect output, e.g.: `cd /app && nohup python3 -m http.server 8000 > /tmp/server.log 2>&1 &`
-
-    Args:
-        command: The shell command to run inside the container.
-    """
     print(f"[run_command] {command}")
     result = get_container().exec_run(["sh", "-c", command], demux=True)
     stdout, stderr = result.output
@@ -79,12 +80,6 @@ def run_command(command: str) -> str:
 
 
 def write_file(path: str, content: str) -> str:
-    """Create or overwrite a file inside the Docker sandbox container.
-
-    Args:
-        path: Absolute path inside the container, e.g. /app/index.html.
-        content: The full text content of the file.
-    """
     print(f"[write_file] {path} ({len(content)} 字节)")
     data = content.encode()
     tar_stream = io.BytesIO()
@@ -96,6 +91,47 @@ def write_file(path: str, content: str) -> str:
     get_container().put_archive("/", tar_stream)
     return f"已写入 {path}"
 
+
+# Ollama's OpenAI-compatible endpoint has no automatic function calling, so
+# the tool schema and the dispatch loop below are both done by hand.
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": (
+                "Execute a shell command inside the Docker sandbox container and return its output. "
+                "To start a long-running service in the background (e.g. a web server), append `&` "
+                "to the command and redirect output, e.g.: "
+                "`cd /app && nohup python3 -m http.server 8000 > /tmp/server.log 2>&1 &`"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The shell command to run inside the container."},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create or overwrite a file inside the Docker sandbox container.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path inside the container, e.g. /app/index.html."},
+                    "content": {"type": "string", "description": "The full text content of the file."},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+]
+
+TOOL_FUNCTIONS = {"run_command": run_command, "write_file": write_file}
 
 SYSTEM_INSTRUCTION = f"""\
 你是一个运行在本地 Docker 沙箱容器里的编程助手（mini Devin）。
@@ -112,26 +148,37 @@ SYSTEM_INSTRUCTION = f"""\
 """
 
 
+def run_agent_loop(task: str):
+    messages = [
+        {"role": "system", "content": SYSTEM_INSTRUCTION},
+        {"role": "user", "content": task},
+    ]
+
+    for _ in range(MAX_STEPS):
+        response = llm_client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS)
+        message = response.choices[0].message
+        messages.append(message.model_dump(exclude_none=True))
+
+        if not message.tool_calls:
+            return message.content
+
+        for call in message.tool_calls:
+            fn = TOOL_FUNCTIONS[call.function.name]
+            args = json.loads(call.function.arguments)
+            result = fn(**args)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
+    return "(reached max steps without a final answer)"
+
+
 def main():
     task = sys.argv[1] if len(sys.argv) > 1 else "帮我写个网页并运行"
 
-    if "GEMINI_API_KEY" not in os.environ:
-        sys.exit("请先设置环境变量 GEMINI_API_KEY")
-
     start_sandbox()
 
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    chat = client.chats.create(
-        model=MODEL,
-        config={
-            "tools": [run_command, write_file],
-            "system_instruction": SYSTEM_INSTRUCTION,
-        },
-    )
-
     print(f"\n[user] {task}\n")
-    response = chat.send_message(task)
-    print(f"\n[gemini] {response.text}")
+    final_answer = run_agent_loop(task)
+    print(f"\n[{MODEL}] {final_answer}")
 
 
 if __name__ == "__main__":

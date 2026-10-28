@@ -1,61 +1,67 @@
 # mini-devin
 
-A minimal "Devin"-style sandbox demo: a Python script that gives Google Gemini
-two tools — run a shell command, write a file — inside a local Docker
-container, and lets it carry out a task end to end (e.g. "write a webpage and
-run it").
+A minimal "Devin"-style sandbox demo: a Python script that gives a local LLM
+(via [Ollama](https://ollama.com)) two tools — run a shell command, write a
+file — inside a local Docker container, and lets it carry out a task end to
+end (e.g. "write a webpage and run it"). Fully local, no API key needed.
 
 ## How it works
 
 `mini_devin.py` starts (or reuses) a long-running `python:3.11-slim` Docker
 container named `mini-devin-sandbox`, with the container's port `8000` mapped
-to `localhost:8000`. It then opens a chat with Gemini using the `google-genai`
-SDK's **automatic function calling**: two plain Python functions,
-`run_command` and `write_file`, are passed in as `tools`. Gemini decides when
-to call them; the SDK executes them against the container and feeds the
-results back to the model, looping until Gemini returns a final answer — no
-manual agent loop needed.
+to `localhost:8000`. It then talks to a local Ollama model through its
+OpenAI-compatible API (`openai` SDK pointed at `http://localhost:11434/v1`),
+passing two tool schemas — `run_command` and `write_file` — in OpenAI
+function-calling format. Ollama has no automatic function-calling loop like
+some hosted SDKs, so `mini_devin.py` runs the loop by hand: send the
+conversation, check if the model asked to call a tool, execute it against the
+container, feed the result back, repeat until the model returns a final
+answer (capped at `MAX_STEPS` iterations).
 
 ## Prerequisites
 
 - macOS (scripts use `brew`/`open -a Docker`)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) — can be
   installed automatically by `install.sh` if missing
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com/)
+- [Ollama](https://ollama.com) — can be installed automatically by
+  `install.sh` if missing
 
 ## Quick start
 
 ```bash
 ./install.sh
 source .venv/bin/activate
-export GEMINI_API_KEY=your_key
 python3 mini_devin.py "write a webpage and run it"
 ```
 
-`install.sh` is idempotent — safe to re-run. It checks for Homebrew and
-Docker (installing them via `brew` only if missing), makes sure the Docker
-daemon is running, creates a project-local virtual environment at `.venv`,
-installs `requirements.txt` into it, and writes a `.env` file with a default
-`GEMINI_MODEL`. Everything it actually changes is recorded in
+`install.sh` is idempotent — safe to re-run. It checks for Homebrew, Docker,
+and Ollama (installing each via `brew` only if missing), makes sure the
+Docker daemon and the Ollama server are running, pulls the model if it isn't
+already local, creates a project-local virtual environment at `.venv`,
+installs `requirements.txt` into it, and writes a `.env` file with
+`OLLAMA_MODEL`. Everything it actually changes is recorded in
 `.install_manifest` so `uninstall.sh` can undo exactly that — nothing more.
 
-Once the task finishes, open <http://localhost:8000> to see what Gemini
+Once the task finishes, open <http://localhost:8000> to see what the model
 built.
 
 ## Configuration
 
-| Variable          | Required | Default              | Notes                                   |
-|-------------------|----------|-----------------------|------------------------------------------|
-| `GEMINI_API_KEY`  | yes      | —                      | Never stored in a file; always `export` it yourself. |
-| `GEMINI_MODEL`    | no       | `gemini-2.5-flash`     | Set in `.env` by `install.sh`; override by editing `.env` or exporting it. |
+| Variable          | Required | Default        | Notes                                                        |
+|-------------------|----------|-----------------|----------------------------------------------------------------|
+| `OLLAMA_MODEL`    | no       | `qwen2.5:3b`     | Set in `.env` by `install.sh`; override by editing `.env` or exporting it. Smallest model with usable tool-calling for this demo — bump to `qwen2.5:7b` if 3b produces malformed tool calls or never calls the tools. |
+| `OLLAMA_BASE_URL` | no       | `http://localhost:11434/v1` | Change if Ollama runs on a different host/port. |
 
 ## Manual setup (without install.sh)
 
 ```bash
+brew install ollama
+ollama serve &                 # if not already running
+ollama pull qwen2.5:3b
+
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-export GEMINI_API_KEY=your_key
 python3 mini_devin.py "write a webpage and run it"
 ```
 
@@ -65,16 +71,34 @@ python3 mini_devin.py "write a webpage and run it"
 ./uninstall.sh
 ```
 
-Removes only what `install.sh` recorded installing — your project's own
-`.venv` and `.env`. If `install.sh` had to install Docker Desktop itself,
-`uninstall.sh` asks for confirmation before removing it, and never removes
-Homebrew.
+Removes only what `install.sh` recorded installing: your project's own
+`.venv` and `.env`, and the `ollama serve` process it started. It asks for
+y/N confirmation before deleting the pulled model (frees disk space) or
+uninstalling Ollama/Docker Desktop themselves, and never touches Homebrew.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push/PR to `main`:
+
+- **lint** — Python/shell syntax checks, shellcheck, and a clean-venv install
+  of `requirements.txt`.
+- **sandbox-smoke-test** — runs `tests/test_sandbox.py`, which drives
+  `start_sandbox`/`write_file`/`run_command` directly (no Ollama involved) to
+  prove the Docker control plane actually works: write a page, serve it,
+  fetch it back over the mapped port. GitHub-hosted runners have Docker
+  preinstalled, so this needs no extra setup.
+
+The LLM/tool-calling path isn't covered by CI on purpose — pulling an Ollama
+model and depending on real model behavior would make CI slow and flaky;
+that path is meant to be exercised locally via `./install.sh`.
 
 ## Files
 
 - `mini_devin.py` — the agent script
-- `requirements.txt` — `google-genai`, `docker`
+- `requirements.txt` — `openai` (used as an OpenAI-compatible client for Ollama), `docker`
 - `install.sh` / `uninstall.sh` — setup and teardown
+- `tests/test_sandbox.py` — CI smoke test for the Docker sandbox mechanics
+- `.github/workflows/ci.yml` — CI pipeline (see above)
 - `.install_manifest` — generated by `install.sh`; tracks what it installed
 - `.env` — generated by `install.sh`; non-secret config only
 
@@ -84,5 +108,5 @@ Homebrew.
   beyond the default Docker bridge network — this is a demo, not a hardened
   sandbox. Don't point it at tasks you don't trust an LLM to execute
   unsupervised.
-- `GEMINI_API_KEY` is read from the environment only and is never written to
-  disk by any script here.
+- Everything here runs locally (Docker + Ollama) — no data leaves your
+  machine and no API key is needed.

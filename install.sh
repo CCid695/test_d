@@ -9,6 +9,11 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="$PROJECT_DIR/.install_manifest"
 VENV_DIR="$PROJECT_DIR/.venv"
 ENV_FILE="$PROJECT_DIR/.env"
+OLLAMA_PID_FILE="$PROJECT_DIR/.ollama_serve.pid"
+
+# Smallest Ollama model with usable tool-calling for this demo; override by
+# exporting OLLAMA_MODEL before running this script.
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:3b}"
 
 : > "$MANIFEST"
 record() { echo "$1" >> "$MANIFEST"; }
@@ -47,6 +52,42 @@ else
     echo "Docker 守护进程运行正常"
 fi
 
+echo "==> 检查 Ollama"
+if ! command -v ollama >/dev/null 2>&1; then
+    echo "未检测到 ollama 命令，正在通过 Homebrew 安装最新版..."
+    brew install ollama
+    record "ollama_installed_by_script=1"
+else
+    echo "ollama 命令已存在，跳过安装"
+fi
+
+echo "==> 检查 Ollama 服务是否在运行"
+if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo "Ollama 服务未运行，正在后台启动 (ollama serve)..."
+    nohup ollama serve >"$PROJECT_DIR/.ollama_serve.log" 2>&1 &
+    echo $! > "$OLLAMA_PID_FILE"
+    record "ollama_server_started_by_script=1"
+    echo "等待 Ollama 启动（最多 30 秒）..."
+    for _ in $(seq 1 15); do
+        curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1 && break
+        sleep 2
+    done
+    if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+        echo "警告: Ollama 服务仍未就绪，请手动运行 'ollama serve' 后重新运行本脚本。"
+    fi
+else
+    echo "Ollama 服务运行正常"
+fi
+
+echo "==> 检查模型 $OLLAMA_MODEL"
+if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$OLLAMA_MODEL"; then
+    echo "本地没有 $OLLAMA_MODEL，正在下载（体积几 GB，视网速可能需要几分钟）..."
+    ollama pull "$OLLAMA_MODEL"
+    record "ollama_model_pulled=$OLLAMA_MODEL"
+else
+    echo "$OLLAMA_MODEL 已存在，跳过下载"
+fi
+
 echo "==> 创建 Python 虚拟环境 ($VENV_DIR)"
 if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
@@ -61,10 +102,9 @@ echo "==> 在虚拟环境中安装 Python 依赖"
 
 echo "==> 检查 .env 配置文件"
 if [ ! -f "$ENV_FILE" ]; then
-    cat > "$ENV_FILE" <<'EOF'
-# mini-devin config. GEMINI_API_KEY is intentionally not written here —
-# for security, always set it with `export` in your shell, never store it in a file.
-GEMINI_MODEL=gemini-2.5-flash
+    cat > "$ENV_FILE" <<EOF
+# mini-devin config. Everything here runs locally — no API key needed.
+OLLAMA_MODEL=$OLLAMA_MODEL
 EOF
     record "env_file_created=1"
     echo "已创建 $ENV_FILE"
@@ -72,19 +112,10 @@ else
     echo ".env 已存在，跳过创建"
 fi
 
-echo "==> 检查 GEMINI_API_KEY 环境变量"
-if [ -z "${GEMINI_API_KEY:-}" ]; then
-    echo "警告: 尚未设置 GEMINI_API_KEY。请在运行前执行:"
-    echo "  export GEMINI_API_KEY=你的key"
-else
-    echo "GEMINI_API_KEY 已设置"
-fi
-
 cat <<EOF
 
 安装完成。运行方式:
   source "$VENV_DIR/bin/activate"
-  export GEMINI_API_KEY=your_key   # if not already set
   python3 mini_devin.py "帮我写个网页并运行"
 
 卸载请运行 ./uninstall.sh（只会移除本脚本自己安装的东西）。
