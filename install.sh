@@ -11,9 +11,10 @@ VENV_DIR="$PROJECT_DIR/.venv"
 ENV_FILE="$PROJECT_DIR/.env"
 OLLAMA_PID_FILE="$PROJECT_DIR/.ollama_serve.pid"
 
-# Smallest Ollama model with usable tool-calling for this demo; override by
+# qwen2.5:3b was tested and does NOT reliably call tools with this demo's
+# system prompt (returns empty output); qwen2.5:7b does. Override by
 # exporting OLLAMA_MODEL before running this script.
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:3b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
 
 : > "$MANIFEST"
 record() { echo "$1" >> "$MANIFEST"; }

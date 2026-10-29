@@ -32,10 +32,11 @@ def _load_dotenv(path):
 
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-# qwen2.5:3b is the smallest Ollama model that still has usable tool-calling
-# support for this kind of multi-step task. Below 3b, tool-call formatting
-# gets unreliable; bump to qwen2.5:7b (OLLAMA_MODEL env var) if 3b misbehaves.
-MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+# Tested against this task's system prompt: qwen2.5:3b consistently returned
+# empty output and never called a tool at all. qwen2.5:7b reliably calls
+# write_file/run_command and finishes the task. Don't drop below 7b without
+# re-testing — override via the OLLAMA_MODEL env var if you do.
+MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 MAX_STEPS = 10
 

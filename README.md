@@ -49,7 +49,7 @@ built.
 
 | Variable          | Required | Default        | Notes                                                        |
 |-------------------|----------|-----------------|----------------------------------------------------------------|
-| `OLLAMA_MODEL`    | no       | `qwen2.5:3b`     | Set in `.env` by `install.sh`; override by editing `.env` or exporting it. Smallest model with usable tool-calling for this demo — bump to `qwen2.5:7b` if 3b produces malformed tool calls or never calls the tools. |
+| `OLLAMA_MODEL`    | no       | `qwen2.5:7b`     | Set in `.env` by `install.sh`; override by editing `.env` or exporting it. Tested: `qwen2.5:3b` reliably returns empty output and never calls a tool with this demo's system prompt; `qwen2.5:7b` reliably calls `write_file`/`run_command` and finishes the task. Don't drop below 7b without re-testing. |
 | `OLLAMA_BASE_URL` | no       | `http://localhost:11434/v1` | Change if Ollama runs on a different host/port. |
 
 ## Manual setup (without install.sh)
@@ -57,7 +57,7 @@ built.
 ```bash
 brew install ollama
 ollama serve &                 # if not already running
-ollama pull qwen2.5:3b
+ollama pull qwen2.5:7b
 
 python3 -m venv .venv
 source .venv/bin/activate
