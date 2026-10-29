@@ -4,3 +4,4 @@
 .install_manifest
 .ollama_serve.log
 .ollama_serve.pid
+.DS_Store
