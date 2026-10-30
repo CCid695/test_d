@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>mini-devin 调度台</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  textarea { width: 100%; height: 4.5rem; font: inherit; box-sizing: border-box; }
+  button { cursor: pointer; }
+  #status { color: #555; margin: 0.5rem 0 1.5rem; }
+  .job { border: 1px solid #ddd; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
+  .job h3 { margin: 0 0 0.25rem; font-size: 1rem; }
+  .mode { font-weight: 600; }
+  .mode.parallel { color: #0a7d2c; }
+  .mode.serial { color: #a35b00; }
+  .reason { color: #666; font-size: 0.85rem; margin: 0.25rem 0 0.75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #eee; vertical-align: top; }
+  .badge { padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.75rem; color: #fff; }
+  .badge.queued { background: #999; }
+  .badge.running { background: #1a6fd1; }
+  .badge.done { background: #0a7d2c; }
+  .badge.error { background: #c0392b; }
+  .badge.stopped { background: #7a7a7a; }
+  .logs { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.75rem; max-height: 8rem; overflow: auto; background: #fafafa; padding: 0.4rem; margin-top: 0.25rem; }
+  .task-cell { max-width: 22rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>mini-devin 调度台</h1>
+
+<textarea id="task" placeholder="描述一个任务，例如：写三个互不相关的静态网页：猫、狗、天气"></textarea>
+<button id="submit">提交任务</button>
+<div id="status">加载中…</div>
+<div id="jobs"></div>
+
+<script>
+const submitBtn = document.getElementById('submit');
+const taskInput = document.getElementById('task');
+const statusEl = document.getElementById('status');
+const jobsEl = document.getElementById('jobs');
+
+submitBtn.addEventListener('click', async () => {
+  const task = taskInput.value.trim();
+  if (!task) return;
+  submitBtn.disabled = true;
+  try {
+    const res = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task }),
+    });
+    if (res.ok) taskInput.value = '';
+    await refresh();
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+jobsEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  btn.disabled = true;
+  await fetch(`/api/agents/${btn.dataset.agent}/${btn.dataset.action}`, { method: 'POST' });
+  await refresh();
+});
+
+function badge(status) {
+  const span = document.createElement('span');
+  span.className = 'badge ' + status;
+  span.textContent = status;
+  return span;
+}
+
+function renderAgentRow(agent) {
+  const tr = document.createElement('tr');
+
+  const cells = {
+    id: agent.id,
+    container: agent.container_name,
+  };
+
+  const idTd = document.createElement('td');
+  idTd.textContent = agent.id;
+  tr.appendChild(idTd);
+
+  const statusTd = document.createElement('td');
+  statusTd.appendChild(badge(agent.status));
+  tr.appendChild(statusTd);
+
+  const taskTd = document.createElement('td');
+  taskTd.className = 'task-cell';
+  taskTd.textContent = agent.task;
+  tr.appendChild(taskTd);
+
+  const actionTd = document.createElement('td');
+  actionTd.textContent = agent.last_action || '';
+  tr.appendChild(actionTd);
+
+  const urlTd = document.createElement('td');
+  if (agent.url) {
+    const a = document.createElement('a');
+    a.href = agent.url; a.target = '_blank'; a.textContent = agent.url;
+    urlTd.appendChild(a);
+  }
+  tr.appendChild(urlTd);
+
+  const ctrlTd = document.createElement('td');
+  if (agent.status === 'queued' || agent.status === 'running') {
+    const stopBtn = document.createElement('button');
+    stopBtn.textContent = 'Stop'; stopBtn.dataset.action = 'stop'; stopBtn.dataset.agent = agent.id;
+    ctrlTd.appendChild(stopBtn);
+  }
+  const killBtn = document.createElement('button');
+  killBtn.textContent = 'Kill'; killBtn.dataset.action = 'kill'; killBtn.dataset.agent = agent.id;
+  ctrlTd.appendChild(killBtn);
+  tr.appendChild(ctrlTd);
+
+  return tr;
+}
+
+function renderLogs(agent) {
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = `日志 (${agent.id})`;
+  details.appendChild(summary);
+  const pre = document.createElement('div');
+  pre.className = 'logs';
+  pre.textContent = agent.logs.join('\n');
+  details.appendChild(pre);
+  return details;
+}
+
+async function refresh() {
+  const res = await fetch('/api/state');
+  const state = await res.json();
+
+  statusEl.textContent = `运行中 ${state.running} / ${state.max_concurrent}，排队 ${state.queued}`;
+
+  jobsEl.innerHTML = '';
+  const agentsByJob = {};
+  for (const a of state.agents) {
+    (agentsByJob[a.job_id] ||= []).push(a);
+  }
+
+  for (const job of [...state.jobs].reverse()) {
+    const div = document.createElement('div');
+    div.className = 'job';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = job.task;
+    div.appendChild(h3);
+
+    if (job.mode) {
+      const modeEl = document.createElement('div');
+      modeEl.innerHTML = '';
+      const modeSpan = document.createElement('span');
+      modeSpan.className = 'mode ' + job.mode;
+      modeSpan.textContent = job.mode;
+      modeEl.appendChild(document.createTextNode('AI 决策: '));
+      modeEl.appendChild(modeSpan);
+      div.appendChild(modeEl);
+
+      const reasonEl = document.createElement('div');
+      reasonEl.className = 'reason';
+      reasonEl.textContent = job.reason;
+      div.appendChild(reasonEl);
+    } else {
+      const planningEl = document.createElement('div');
+      planningEl.className = 'reason';
+      planningEl.textContent = '规划中…';
+      div.appendChild(planningEl);
+    }
+
+    const table = document.createElement('table');
+    const thead = document.createElement('tr');
+    for (const h of ['Agent', '状态', '任务', '最近动作', '链接', '操作']) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      thead.appendChild(th);
+    }
+    table.appendChild(thead);
+
+    const agents = agentsByJob[job.id] || [];
+    for (const agent of agents) table.appendChild(renderAgentRow(agent));
+    div.appendChild(table);
+
+    for (const agent of agents) div.appendChild(renderLogs(agent));
+
+    jobsEl.appendChild(div);
+  }
+}
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

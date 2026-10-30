@@ -16,7 +16,7 @@ jobs:
           python-version: "3.11"
 
       - name: Python syntax check
-        run: python -m py_compile mini_devin.py
+        run: python -m py_compile mini_devin.py orchestrator.py dashboard.py
 
       - name: Shell syntax check
         run: |

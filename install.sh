@@ -65,7 +65,10 @@ fi
 echo "==> 检查 Ollama 服务是否在运行"
 if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
     echo "Ollama 服务未运行，正在后台启动 (ollama serve)..."
-    nohup ollama serve >"$PROJECT_DIR/.ollama_serve.log" 2>&1 &
+    # OLLAMA_NUM_PARALLEL=3 lets the server actually generate for up to 3
+    # concurrent agents (dashboard.py); without it the demo still works,
+    # LLM calls just serialize while agents' container commands still overlap.
+    OLLAMA_NUM_PARALLEL=3 nohup ollama serve >"$PROJECT_DIR/.ollama_serve.log" 2>&1 &
     echo $! > "$OLLAMA_PID_FILE"
     record "ollama_server_started_by_script=1"
     echo "等待 Ollama 启动（最多 30 秒）..."
@@ -116,8 +119,14 @@ fi
 cat <<EOF
 
 安装完成。运行方式:
-  source "$VENV_DIR/bin/activate"
-  python3 mini_devin.py "帮我写个网页并运行"
+  单 agent（命令行）:
+    source "$VENV_DIR/bin/activate"
+    python3 mini_devin.py "帮我写个网页并运行"
+
+  多 agent 调度台（网页）:
+    source "$VENV_DIR/bin/activate"
+    python3 dashboard.py
+    然后打开 http://localhost:5050
 
 卸载请运行 ./uninstall.sh（只会移除本脚本自己安装的东西）。
 EOF
