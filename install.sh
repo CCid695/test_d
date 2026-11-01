@@ -29,6 +29,10 @@ else
 fi
 
 echo "==> 检查 Docker"
+# The app itself no longer talks to Docker directly — every sandbox is a
+# real Kubernetes Deployment/Pod now. Docker Desktop is still required
+# because minikube's docker driver runs the cluster's node AS a Docker
+# container; this check exists for that, not for the app.
 if ! command -v docker >/dev/null 2>&1; then
     echo "未检测到 docker 命令，正在通过 Homebrew 安装最新版 Docker Desktop..."
     brew install --cask docker
@@ -37,7 +41,7 @@ else
     echo "docker 命令已存在，跳过安装"
 fi
 
-echo "==> 检查 Docker 守护进程是否在运行"
+echo "==> 检查 Docker 守护进程是否在运行（minikube 的 docker driver 需要）"
 if ! docker info >/dev/null 2>&1; then
     echo "Docker 守护进程未运行，尝试启动 Docker Desktop..."
     open -a Docker >/dev/null 2>&1 || true
@@ -92,13 +96,13 @@ else
     echo "$OLLAMA_MODEL 已存在，跳过下载"
 fi
 
-echo "==> 检查 Kubernetes（dashboard 的 k8s 后端需要，可选）"
+echo "==> 检查 Kubernetes（mini_devin.py 和 dashboard.py 都必须要有，没有可用集群就什么都跑不起来）"
 K8S_READY=1
 if ! command -v kubectl >/dev/null 2>&1; then
-    echo "未检测到 kubectl，跳过 k8s 检查（dashboard 默认用的是 k8s 后端，建议装上 kubectl）"
+    echo "未检测到 kubectl"
     K8S_READY=0
 elif ! command -v minikube >/dev/null 2>&1; then
-    echo "未检测到 minikube，跳过 k8s 检查"
+    echo "未检测到 minikube"
     K8S_READY=0
 elif ! kubectl --context minikube cluster-info --request-timeout=5s >/dev/null 2>&1; then
     echo "minikube 集群连不上（kubectl --context minikube cluster-info 失败）"
@@ -109,12 +113,12 @@ elif ! kubectl --context minikube get ingressclass nginx >/dev/null 2>&1; then
 fi
 if [ "$K8S_READY" = "0" ]; then
     cat <<'EOF'
-k8s 后端暂时不可用。修复方式（任选）:
+警告: Kubernetes 集群没就绪。CLI 和 dashboard 现在都依赖真实的 K8s Pod/Service/Ingress
+作为沙箱，没有可用集群，两者都跑不起来——这不是可选项。修复方式:
   minikube start --driver=docker && minikube addons enable ingress
-或者跳过 k8s，直接用 Docker 后端:
-  MINI_DEVIN_BACKEND=docker python3 dashboard.py
 (本脚本不会自动安装/启动 minikube——集群的 driver、资源分配这些是机器相关的选择，
- 自动装或自动删都可能影响你机器上其它已经在跑的集群负载，所以这里只检查不动手。)
+ 自动装或自动删都可能影响你机器上其它已经在跑的集群负载，所以这里只检查不动手。
+ 修好之后重新运行一遍本脚本。)
 EOF
 else
     echo "kubectl/minikube/ingress-nginx 都正常"
@@ -146,16 +150,15 @@ fi
 
 cat <<EOF
 
-安装完成。运行方式:
-  单 agent（命令行，始终用 Docker 沙箱）:
+安装完成。两条路都是真实的 Kubernetes Pod/Service/Ingress 沙箱:
+  单 agent（命令行）:
     source "$VENV_DIR/bin/activate"
     python3 mini_devin.py "帮我写个网页并运行"
 
-  多 agent 调度台（网页，默认用 Kubernetes 沙箱）:
+  多 agent 调度台（网页）:
     source "$VENV_DIR/bin/activate"
     python3 dashboard.py
     然后打开 http://localhost:5050（dashboard 启动日志里会打印取 token 的命令）
-    k8s 集群不可用的话，改用 Docker 后端: MINI_DEVIN_BACKEND=docker python3 dashboard.py
 
 卸载请运行 ./uninstall.sh（只会移除本脚本自己安装的东西）。
 EOF

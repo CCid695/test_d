@@ -370,7 +370,9 @@ def delete_labeled_resources():
 
 
 def sandbox_factory(rec):
-    return K8sSandbox(rec.container_name, rec.id)
+    # sandbox_id, when set, is the shared id collaborate-mode roles use
+    # instead of each role's own agent id (they all point at one sandbox).
+    return K8sSandbox(rec.container_name, getattr(rec, "sandbox_id", None) or rec.id)
 
 
 def get_or_create_dashboard_token() -> str:

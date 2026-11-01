@@ -14,6 +14,7 @@
   .mode { font-weight: 600; }
   .mode.parallel { color: #0a7d2c; }
   .mode.serial { color: #a35b00; }
+  .mode.collaborate { color: #6a1b9a; }
   .reason { color: #666; font-size: 0.85rem; margin: 0.25rem 0 0.75rem; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #eee; vertical-align: top; }
@@ -23,8 +24,16 @@
   .badge.done { background: #0a7d2c; }
   .badge.error { background: #c0392b; }
   .badge.stopped { background: #7a7a7a; }
+  .badge.waiting { background: #b8860b; }
+  .badge.skipped { background: #bbb; color: #333; }
   .logs { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.75rem; max-height: 8rem; overflow: auto; background: #fafafa; padding: 0.4rem; margin-top: 0.25rem; }
   .task-cell { max-width: 22rem; white-space: pre-wrap; }
+  .final-result { border: 1px solid #6a1b9a; border-radius: 6px; padding: 0.6rem 0.8rem; margin-bottom: 0.75rem; background: #faf5ff; }
+  .final-result h4 { margin: 0 0 0.4rem; font-size: 0.9rem; color: #6a1b9a; }
+  .final-result pre { white-space: pre-wrap; font-family: inherit; margin: 0.4rem 0 0; font-size: 0.85rem; }
+  .final-warning { color: #c0392b; font-size: 0.85rem; margin-top: 0.4rem; }
+  .shared-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; font-size: 0.85rem; }
+  .integrator-row { border-top: 2px solid #6a1b9a; }
   #token-bar { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
   #token-bar input { flex: 1; font: inherit; }
   #token-hint { color: #c0392b; font-size: 0.85rem; margin: -0.5rem 0 1rem; display: none; }
@@ -160,6 +169,104 @@ function renderAgentRow(agent) {
   return tr;
 }
 
+function renderCollaborateAgentRow(agent, roleNameById) {
+  const tr = document.createElement('tr');
+  if (agent.kind === 'integrator') tr.className = 'integrator-row';
+
+  const roleTd = document.createElement('td');
+  roleTd.textContent = agent.role || agent.id;
+  tr.appendChild(roleTd);
+
+  const depTd = document.createElement('td');
+  if (agent.kind === 'integrator') {
+    depTd.textContent = '全部角色';
+  } else if (agent.depends_on && agent.depends_on.length) {
+    depTd.textContent = agent.depends_on.map((id) => roleNameById[id] || id).join('、');
+  } else {
+    depTd.textContent = '—';
+  }
+  tr.appendChild(depTd);
+
+  const statusTd = document.createElement('td');
+  statusTd.appendChild(badge(agent.status));
+  tr.appendChild(statusTd);
+
+  const taskTd = document.createElement('td');
+  taskTd.className = 'task-cell';
+  taskTd.textContent = agent.task;
+  tr.appendChild(taskTd);
+
+  const actionTd = document.createElement('td');
+  actionTd.textContent = agent.last_action || '';
+  tr.appendChild(actionTd);
+
+  const ctrlTd = document.createElement('td');
+  if (['queued', 'running', 'waiting'].includes(agent.status)) {
+    const stopBtn = document.createElement('button');
+    stopBtn.textContent = 'Stop'; stopBtn.dataset.action = 'stop'; stopBtn.dataset.agent = agent.id;
+    ctrlTd.appendChild(stopBtn);
+  }
+  tr.appendChild(ctrlTd);
+
+  return tr;
+}
+
+function renderFinalResult(job) {
+  const box = document.createElement('div');
+  box.className = 'final-result';
+
+  const h4 = document.createElement('h4');
+  h4.textContent = '最终结果（整合验收）';
+  box.appendChild(h4);
+
+  if (!job.final_status) {
+    const p = document.createElement('div');
+    p.textContent = '等待 3 个角色完成后由整合者验收…';
+    box.appendChild(p);
+    return box;
+  }
+
+  box.appendChild(badge(job.final_status));
+
+  const pre = document.createElement('pre');
+  pre.textContent = job.final_result || '';
+  box.appendChild(pre);
+
+  if (job.final_verified === false) {
+    const warn = document.createElement('div');
+    warn.className = 'final-warning';
+    warn.textContent = '整合者没有执行任何验证命令，结论未经验证';
+    box.appendChild(warn);
+  }
+
+  return box;
+}
+
+function renderSharedBar(agents) {
+  const bar = document.createElement('div');
+  bar.className = 'shared-bar';
+
+  const left = document.createElement('span');
+  const withUrl = agents.find((a) => a.url);
+  if (withUrl) {
+    left.appendChild(document.createTextNode('共享沙箱: '));
+    const a = document.createElement('a');
+    a.href = withUrl.url; a.target = '_blank'; a.textContent = withUrl.url;
+    left.appendChild(a);
+  } else {
+    left.textContent = '共享沙箱: （尚未就绪）';
+  }
+  bar.appendChild(left);
+
+  const killBtn = document.createElement('button');
+  killBtn.textContent = 'Kill 整个任务（删除共享沙箱）';
+  killBtn.dataset.action = 'kill';
+  killBtn.dataset.agent = agents.length ? agents[0].id : '';
+  bar.appendChild(killBtn);
+
+  return bar;
+}
+
 function renderLogs(agent) {
   const details = document.createElement('details');
   const summary = document.createElement('summary');
@@ -176,7 +283,7 @@ async function refresh() {
   const res = await fetch('/api/state');
   const state = await res.json();
 
-  statusEl.textContent = `运行中 ${state.running} / ${state.max_concurrent}，排队 ${state.queued}`;
+  statusEl.textContent = `运行中 ${state.running} / ${state.max_concurrent}，排队 ${state.queued}，等待依赖 ${state.waiting || 0}`;
 
   jobsEl.innerHTML = '';
   const agentsByJob = {};
@@ -213,18 +320,43 @@ async function refresh() {
       div.appendChild(planningEl);
     }
 
-    const table = document.createElement('table');
-    const thead = document.createElement('tr');
-    for (const h of ['Agent', '状态', '任务', '最近动作', '链接', '操作']) {
-      const th = document.createElement('th');
-      th.textContent = h;
-      thead.appendChild(th);
-    }
-    table.appendChild(thead);
-
     const agents = agentsByJob[job.id] || [];
-    for (const agent of agents) table.appendChild(renderAgentRow(agent));
-    div.appendChild(table);
+
+    if (job.mode === 'collaborate') {
+      div.appendChild(renderFinalResult(job));
+      if (agents.length) div.appendChild(renderSharedBar(agents));
+
+      const roleNameById = {};
+      for (const a of agents) roleNameById[a.id] = a.role || a.id;
+
+      const table = document.createElement('table');
+      const thead = document.createElement('tr');
+      for (const h of ['角色', '依赖', '状态', '任务', '最近动作', '操作']) {
+        const th = document.createElement('th');
+        th.textContent = h;
+        thead.appendChild(th);
+      }
+      table.appendChild(thead);
+
+      const roles = agents.filter((a) => a.kind === 'role');
+      const integrator = agents.filter((a) => a.kind === 'integrator');
+      for (const agent of [...roles, ...integrator]) {
+        table.appendChild(renderCollaborateAgentRow(agent, roleNameById));
+      }
+      div.appendChild(table);
+    } else {
+      const table = document.createElement('table');
+      const thead = document.createElement('tr');
+      for (const h of ['Agent', '状态', '任务', '最近动作', '链接', '操作']) {
+        const th = document.createElement('th');
+        th.textContent = h;
+        thead.appendChild(th);
+      }
+      table.appendChild(thead);
+
+      for (const agent of agents) table.appendChild(renderAgentRow(agent));
+      div.appendChild(table);
+    }
 
     for (const agent of agents) div.appendChild(renderLogs(agent));
 
