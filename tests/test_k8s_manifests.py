@@ -1,6 +1,8 @@
 """Pure assertions on k8s_backend's manifest builders — no cluster needed,
 these never make a network call."""
 
+from types import SimpleNamespace
+
 from kubernetes import client
 
 import mini_devin as md
@@ -57,7 +59,10 @@ def test_ingress_path_regex_and_rewrite():
 
 
 def test_owner_reference_present_on_service_and_ingress():
-    dep = client.V1Deployment(metadata=client.V1ObjectMeta(name=NAME, uid="fake-uid"))
+    # owner_ref_for() only reads deployment.metadata.{name,uid} — a bare
+    # stand-in avoids depending on V1Deployment's other required fields,
+    # which differ across kubernetes client versions.
+    dep = SimpleNamespace(metadata=client.V1ObjectMeta(name=NAME, uid="fake-uid"))
     owner = owner_ref_for(dep)
     assert owner.uid == "fake-uid"
     assert owner.kind == "Deployment"
