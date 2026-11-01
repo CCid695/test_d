@@ -19,6 +19,7 @@ import os
 import sys
 import tarfile
 import threading
+import time
 
 from openai import OpenAI
 
@@ -177,16 +178,26 @@ class Agent:
         return f"已写入 {path}"
 
     def run(self, task: str, max_steps: int = MAX_STEPS, extra_system: str = None,
-            min_tool_calls: int = None, nudge: str = None) -> str:
-        """Run the tool-calling loop. If min_tool_calls is set, a model that
-        tries to stop (no tool_calls) before reaching that many real tool
-        calls gets a `nudge` message appended instead of being allowed to
-        return — this exists because we've observed the model fabricate an
-        elaborate-looking verification narrative in its final text after
-        only one or two real tool calls, instead of actually running the
-        checks its own system prompt asked for. Each retry still counts
-        against max_steps, so a model that keeps refusing to call tools
-        eventually hits the max-steps fallback rather than looping forever.
+            min_tool_calls: int = None, nudge: str = None, max_seconds: float = None) -> str:
+        """Run the tool-calling loop.
+
+        If min_tool_calls is set, a model that tries to stop (no tool_calls)
+        before reaching that many real tool calls gets a `nudge` message
+        appended instead of being allowed to return — this exists because
+        we've observed the model fabricate an elaborate-looking verification
+        narrative in its final text after only one or two real tool calls,
+        instead of actually running the checks its own system prompt asked
+        for. Each retry still counts against max_steps.
+
+        If max_seconds is set, this is a hard wall-clock budget, not just a
+        step count — because min_tool_calls alone can keep a slow local
+        model "working" for a long time with no visible progress (a nudge
+        round that produces no tool call logs nothing). Before each LLM
+        call we check the remaining budget: if it's already gone, we stop
+        without even attempting the call; otherwise the *remaining* time is
+        passed as that call's own `timeout=`, so a slow final call can't
+        itself blow past the deadline. A timeout on that call is treated as
+        "ran out of time," not an error.
         """
         url = self.url or "(unknown URL — start_sandbox() wasn't called first)"
         system_content = build_system_instruction(url)
@@ -197,10 +208,27 @@ class Agent:
             {"role": "user", "content": task},
         ]
 
+        start = time.monotonic()
         tool_call_count = 0
         for _ in range(max_steps):
             self._check_stop()
-            response = self.llm.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS)
+
+            call_kwargs = {"model": MODEL, "messages": messages, "tools": TOOLS}
+            if max_seconds is not None:
+                remaining = max_seconds - (time.monotonic() - start)
+                if remaining <= 0:
+                    return (f"(超过 {max_seconds:.0f} 秒时间上限，已停止验证；"
+                             f"期间完成了 {tool_call_count} 次真实工具调用)")
+                call_kwargs["timeout"] = remaining
+
+            try:
+                response = self.llm.chat.completions.create(**call_kwargs)
+            except Exception:
+                if max_seconds is not None and time.monotonic() - start >= max_seconds - 0.5:
+                    return (f"(超过 {max_seconds:.0f} 秒时间上限，已停止验证；"
+                             f"期间完成了 {tool_call_count} 次真实工具调用)")
+                raise
+
             message = response.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
 

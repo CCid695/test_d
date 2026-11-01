@@ -285,6 +285,7 @@ class AgentRecord:
     extra_system: str = None
     prompt: str = None  # full task text built at launch; task stays the short label
     min_tool_calls: int = None  # set => Agent.run() refuses to stop before this many real tool calls
+    max_seconds: float = None  # set => Agent.run() stops at this wall-clock budget, no matter what
 
     def to_dict(self):
         return {
@@ -344,6 +345,13 @@ INTEGRATOR_MAX_STEPS = 15
 # at least this many real tool calls before it's allowed to stop makes that
 # much harder — see Agent.run()'s min_tool_calls.
 INTEGRATOR_MIN_TOOL_CALLS = 3
+# A hard wall-clock cap, not just a step count — min_tool_calls alone can
+# keep a slow local model "working" for a long time with no visible
+# progress (a nudge round that logs nothing if it makes no tool call), and
+# a verification step that might take forever isn't practically usable.
+# Real observed worst case without this: 9+ minutes with only 2 tool calls
+# logged. See Agent.run()'s max_seconds.
+INTEGRATOR_MAX_SECONDS = 360
 INTEGRATOR_NUDGE = (
     "你还没有真的完成要求的验证步骤——不要在文字里描述你「已经」检查/启动/验证了什么，"
     "必须真的调用 run_command/write_file，依据工具的真实返回结果判断，再给出结论。"
@@ -560,8 +568,8 @@ def make_run_fn(sandbox_factory, llm=None):
         agent = md.Agent(rec.container_name, sandbox=resolve(rec), log=log, stop_event=rec.stop_event, llm=llm)
         orch.set_url(rec.id, agent.start_sandbox())
         nudge = INTEGRATOR_NUDGE if rec.kind == "integrator" else None
-        return agent.run(rec.prompt or rec.task, max_steps=rec.max_steps,
-                          extra_system=rec.extra_system, min_tool_calls=rec.min_tool_calls, nudge=nudge)
+        return agent.run(rec.prompt or rec.task, max_steps=rec.max_steps, extra_system=rec.extra_system,
+                          min_tool_calls=rec.min_tool_calls, nudge=nudge, max_seconds=rec.max_seconds)
     return run_fn
 
 
@@ -664,6 +672,7 @@ class Orchestrator:
             depends_on=[rec.id for rec in role_recs],
             sandbox_id=sandbox_id,
             min_tool_calls=INTEGRATOR_MIN_TOOL_CALLS,
+            max_seconds=INTEGRATOR_MAX_SECONDS,
         )
         self._agents[integrator_id] = integrator
         job.agent_ids.append(integrator_id)

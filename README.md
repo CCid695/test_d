@@ -145,10 +145,19 @@ point of the demo:
   `final_verified` is false. One real trade-off observed: a nudge round
   that produces no tool call logs nothing (only real tool calls do), and
   each retry re-sends a growing message history — so a model that keeps
-  trying to stop early can look "stuck" for several minutes on a local 7B
-  model with no new log lines, even though it's genuinely working through
+  trying to stop early can look "stuck" for a while on a local 7B model
+  with no new log lines, even though it's genuinely working through
   `min_tool_calls`, not actually hung. `INTEGRATOR_MAX_STEPS=15` bounds the
-  worst case, but that can still mean a long wait.
+  step count, but in one real run that still meant 9+ minutes of wall
+  clock on only 2 logged tool calls — a verification phase with no time
+  limit isn't practically usable, so `Agent.run()` also takes a
+  `max_seconds` wall-clock budget: `orchestrator.INTEGRATOR_MAX_SECONDS =
+  360` gives the integrator a hard 6-minute cap, checked before every LLM
+  call (so it won't even start a call once the budget is gone) and passed
+  as that call's own request `timeout=` (so a slow final call can't itself
+  blow past the deadline). Hitting the cap ends the job with an honest
+  "ran out of time, completed N real tool calls" result instead of an
+  unbounded wait.
 
 - **Concurrency cap**: at most 3 agents *run* at once
   (`orchestrator.MAX_CONCURRENT`) regardless of mode — a

@@ -1,8 +1,9 @@
-"""Unit tests for mini_devin.Agent.run()'s tool-calling loop, specifically
-the min_tool_calls "keep going" mechanism — added after real testing showed
-the integrator fabricating an elaborate verification narrative in its final
-text after only one real tool call. Uses a fake LLM client and a fake
-sandbox — no Ollama, no Docker/K8s needed.
+"""Unit tests for mini_devin.Agent.run()'s tool-calling loop: the
+min_tool_calls "keep going" mechanism and the max_seconds wall-clock cap —
+both added after real testing showed the integrator fabricating an
+elaborate verification narrative, and separately getting "stuck" for
+minutes with no time bound. Uses a fake LLM client and a fake sandbox — no
+Ollama, no Docker/K8s needed.
 """
 
 from types import SimpleNamespace
@@ -29,9 +30,11 @@ class FakeCompletions:
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = 0
+        self.received_kwargs = []
 
-    def create(self, model, messages, tools):
+    def create(self, model, messages, tools, **kwargs):
         self.calls += 1
+        self.received_kwargs.append(kwargs)
         if not self._responses:
             raise AssertionError("FakeLLM ran out of canned responses")
         return SimpleNamespace(choices=[SimpleNamespace(message=self._responses.pop(0))])
@@ -128,3 +131,108 @@ def test_custom_nudge_text_is_sent_back_to_the_model():
     # after the model's first (rejected) attempt to stop.
     second_call_messages = seen_messages[1]
     assert any(m.get("content") == "MY CUSTOM NUDGE" for m in second_call_messages)
+
+
+def test_max_seconds_none_does_not_pass_a_timeout_kwarg():
+    llm = FakeLLM([FakeMessage(content="done")])
+    agent = _make_agent(llm)
+
+    agent.run("do something", max_steps=5)
+
+    assert "timeout" not in llm.completions.received_kwargs[0]
+
+
+def test_max_seconds_passes_remaining_budget_as_call_timeout():
+    responses = [
+        FakeMessage(tool_calls=[FakeToolCall("1", "run_command", '{"command": "ls"}')]),
+        FakeMessage(content="done"),
+    ]
+    llm = FakeLLM(responses)
+    agent = _make_agent(llm)
+
+    agent.run("do something", max_steps=5, max_seconds=100)
+
+    first_timeout = llm.completions.received_kwargs[0]["timeout"]
+    second_timeout = llm.completions.received_kwargs[1]["timeout"]
+    assert 0 < first_timeout <= 100
+    # The second call's budget must not exceed the first: real time elapsed since start.
+    assert second_timeout <= first_timeout
+
+
+def test_max_seconds_stops_without_calling_llm_once_budget_is_exhausted():
+    class ClockAdvancingCompletions(FakeCompletions):
+        """Each call reports being instantaneous to FakeLLM's bookkeeping,
+        but manually advances a fake clock so the budget runs out after
+        exactly 2 calls without needing a real sleep."""
+
+        def __init__(self, responses, advance_fn):
+            super().__init__(responses)
+            self._advance = advance_fn
+
+        def create(self, model, messages, tools, **kwargs):
+            self._advance()
+            return super().create(model, messages, tools, **kwargs)
+
+    fake_now = [0.0]
+
+    def fake_monotonic():
+        return fake_now[0]
+
+    def advance():
+        fake_now[0] += 0.5
+
+    responses = [
+        FakeMessage(tool_calls=[FakeToolCall("1", "run_command", '{"command": "ls"}')]),
+        FakeMessage(tool_calls=[FakeToolCall("2", "run_command", '{"command": "ls"}')]),
+        FakeMessage(content="should never get here"),
+    ]
+    completions = ClockAdvancingCompletions(responses, advance)
+    llm = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    agent = _make_agent(llm)
+
+    original_monotonic = md.time.monotonic
+    md.time.monotonic = fake_monotonic
+    try:
+        result = agent.run("verify something", max_steps=10, max_seconds=1.0)
+    finally:
+        md.time.monotonic = original_monotonic
+
+    assert "超过" in result
+    assert "2 次真实工具调用" in result
+    # The 3rd LLM call must never happen once the budget is gone.
+    assert completions.calls == 2
+
+
+def test_max_seconds_treats_a_call_exception_near_the_deadline_as_timeout():
+    class TimingOutCompletions(FakeCompletions):
+        def create(self, model, messages, tools, **kwargs):
+            self.calls += 1
+            raise TimeoutError("simulated SDK timeout")
+
+    completions = TimingOutCompletions([])
+    llm = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    agent = _make_agent(llm)
+
+    result = agent.run("verify something", max_steps=5, max_seconds=0.01)
+
+    assert "超过" in result
+    assert completions.calls == 1
+
+
+def test_max_seconds_reraises_exception_far_from_the_deadline():
+    class TimingOutCompletions(FakeCompletions):
+        def create(self, model, messages, tools, **kwargs):
+            self.calls += 1
+            raise RuntimeError("some unrelated failure")
+
+    completions = TimingOutCompletions([])
+    llm = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    agent = _make_agent(llm)
+
+    try:
+        agent.run("verify something", max_steps=5, max_seconds=100)
+        raised = False
+    except RuntimeError:
+        raised = True
+
+    assert raised
