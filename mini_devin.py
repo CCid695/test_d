@@ -1,4 +1,4 @@
-"""Mini Devin: local Ollama models control local Docker sandbox containers via tool calling.
+"""Mini Devin: local Ollama models control sandboxed agents via tool calling.
 
 Usage:
     python3 mini_devin.py "write a webpage and run it"
@@ -7,7 +7,8 @@ Requires:
     - Docker Desktop / Docker Engine running locally
     - Ollama running locally (http://localhost:11434) with OLLAMA_MODEL pulled
 
-For running multiple agents concurrently with a dashboard, see dashboard.py.
+For running multiple agents concurrently with a dashboard (Docker or
+Kubernetes sandboxes), see dashboard.py.
 """
 
 import io
@@ -48,8 +49,8 @@ IMAGE = "python:3.11-slim"
 HOST_PORT = 8000
 CONTAINER_PORT = "8000/tcp"
 
-# Tag every agent-created container with this label so a dashboard/orchestrator
-# can find and clean up containers left over from a previous run.
+# Tag every agent-created sandbox with this label so a dashboard/orchestrator
+# can find and clean up ones left over from a previous run.
 AGENT_LABEL = {"mini-devin.role": "agent"}
 
 # api_key is unused by Ollama; timeout guards against one hung generation
@@ -73,18 +74,19 @@ class AgentStopped(Exception):
     can unwind cleanly instead of running to completion."""
 
 
-def build_system_instruction(host_port: int) -> str:
+def build_system_instruction(url: str) -> str:
     return f"""\
-你是一个运行在本地 Docker 沙箱容器里的编程助手（mini Devin）。
+你是一个运行在沙箱容器里的编程助手（mini Devin）。
 你有两个工具：
 - run_command: 在沙箱内执行 shell 命令
 - write_file: 在沙箱内写文件
 
-容器内 {CONTAINER_PORT} 端口已经映射到宿主机 {host_port} 端口。
+沙箱内 {CONTAINER_PORT.split('/')[0]} 端口已经映射到 {url}。
 如果用户要求写网页并运行，请把静态文件写到 /app 目录下，
 然后用类似 `cd /app && nohup python3 -m http.server {CONTAINER_PORT.split('/')[0]} > /tmp/server.log 2>&1 &`
 的命令在后台启动一个 HTTP 服务器（注意加 & 后台运行，不要阻塞），
-最后告诉用户可以通过 http://localhost:{host_port} 访问。
+最后告诉用户可以通过 {url} 访问。
+网页里引用其它文件（比如 style.css、图片）请用相对路径，不要以 / 开头。
 完成后用中文简要总结你做了什么。
 """
 
@@ -97,7 +99,7 @@ TOOLS = [
         "function": {
             "name": "run_command",
             "description": (
-                "Execute a shell command inside the Docker sandbox container and return its output. "
+                "Execute a shell command inside the sandbox and return its output. "
                 "To start a long-running service in the background (e.g. a web server), append `&` "
                 "to the command and redirect output, e.g.: "
                 "`cd /app && nohup python3 -m http.server 8000 > /tmp/server.log 2>&1 &`"
@@ -105,7 +107,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "The shell command to run inside the container."},
+                    "command": {"type": "string", "description": "The shell command to run inside the sandbox."},
                 },
                 "required": ["command"],
             },
@@ -115,11 +117,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Create or overwrite a file inside the Docker sandbox container.",
+            "description": "Create or overwrite a file inside the sandbox.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute path inside the container, e.g. /app/index.html."},
+                    "path": {"type": "string", "description": "Absolute path inside the sandbox, e.g. /app/index.html."},
                     "content": {"type": "string", "description": "The full text content of the file."},
                 },
                 "required": ["path", "content"],
@@ -128,46 +130,52 @@ TOOLS = [
     },
 ]
 
-SYSTEM_INSTRUCTION = build_system_instruction(HOST_PORT)
+SYSTEM_INSTRUCTION = build_system_instruction(f"http://localhost:{HOST_PORT}")
 
 
-class Agent:
-    """One LLM-driven worker with its own Docker sandbox container.
+def _build_tar(path: str, content: str) -> bytes:
+    """Build an in-memory tar archive containing one file, so it can be
+    extracted into a sandbox without shell-escaping its content."""
+    data = content.encode()
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        info = tarfile.TarInfo(name=path.lstrip("/"))
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return tar_stream.getvalue()
 
-    Multiple Agent instances can run concurrently (e.g. from an orchestrator's
-    thread pool) as long as each has a distinct container_name.
-    """
 
-    def __init__(self, container_name=CONTAINER_NAME, host_port=HOST_PORT, *,
-                 log=print, stop_event=None, labels=None, llm=None):
-        self.container_name = container_name
+class DockerSandbox:
+    """Docker-backed Sandbox: a long-running container, controlled via the
+    Docker SDK. See k8s_backend.K8sSandbox for the Kubernetes-backed one —
+    both implement the same start/exec/put_archive/remove interface so
+    Agent doesn't need to know which backend it's talking to."""
+
+    def __init__(self, name, host_port=None, labels=None):
+        self.name = name
         self.host_port = host_port  # None means "let Docker assign a free port"
-        self.log = log
-        self.stop_event = stop_event or threading.Event()
         self.labels = labels
-        self.llm = llm or llm_client
-        self.docker = docker.from_env()
-        self.tool_functions = {"run_command": self.run_command, "write_file": self.write_file}
+        self._docker = None
 
-    def _check_stop(self):
-        if self.stop_event.is_set():
-            raise AgentStopped(f"agent for container {self.container_name} was stopped")
+    @property
+    def docker_client(self):
+        if self._docker is None:
+            self._docker = docker.from_env()
+        return self._docker
 
     def container(self):
-        return self.docker.containers.get(self.container_name)
+        return self.docker_client.containers.get(self.name)
 
-    def start_sandbox(self):
-        """Ensure the sandbox container exists and is running, resolving self.host_port
-        (picking a free one if it was None)."""
+    def start(self, log, should_stop) -> str:
         ports = {CONTAINER_PORT: self.host_port}
         try:
             container = self.container()
             if container.status != "running":
                 container.start()
         except docker.errors.NotFound:
-            container = self.docker.containers.run(
+            container = self.docker_client.containers.run(
                 IMAGE,
-                name=self.container_name,
+                name=self.name,
                 command="sleep infinity",
                 ports=ports,
                 detach=True,
@@ -179,34 +187,78 @@ class Agent:
             bindings = container.attrs["NetworkSettings"]["Ports"][CONTAINER_PORT]
             self.host_port = int(bindings[0]["HostPort"])
 
-        self.log(f"[sandbox] 容器 {self.container_name} 已就绪，http://localhost:{self.host_port}")
-        return container
+        url = f"http://localhost:{self.host_port}"
+        log(f"[sandbox] 容器 {self.name} 已就绪，{url}")
+        return url
+
+    def exec(self, command: str, stdin_bytes: bytes = None):
+        result = self.container().exec_run(["sh", "-c", command], demux=True)
+        stdout, stderr = result.output
+        output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
+        return result.exit_code, output
+
+    def put_archive(self, tar_bytes: bytes):
+        self.container().put_archive("/", tar_bytes)
+
+    def remove(self):
+        try:
+            self.container().remove(force=True)
+        except docker.errors.NotFound:
+            pass
+
+
+class Agent:
+    """One LLM-driven worker with its own sandbox.
+
+    Multiple Agent instances can run concurrently (e.g. from an orchestrator's
+    thread pool) as long as each has a distinct sandbox. Pass a `sandbox=`
+    (e.g. k8s_backend.K8sSandbox) to run on a different backend than Docker.
+    """
+
+    def __init__(self, container_name=CONTAINER_NAME, host_port=HOST_PORT, *,
+                 sandbox=None, log=print, stop_event=None, labels=None, llm=None):
+        self.container_name = container_name
+        self.log = log
+        self.stop_event = stop_event or threading.Event()
+        self.llm = llm or llm_client
+        self.sandbox = sandbox or DockerSandbox(container_name, host_port, labels)
+        self.url = None
+        self.tool_functions = {"run_command": self.run_command, "write_file": self.write_file}
+
+    @property
+    def host_port(self):
+        return getattr(self.sandbox, "host_port", None)
+
+    def _check_stop(self):
+        if self.stop_event.is_set():
+            raise AgentStopped(f"agent {self.container_name} was stopped")
+
+    def container(self):
+        """Docker-only convenience accessor, kept for backward compatibility."""
+        return self.sandbox.container()
+
+    def start_sandbox(self) -> str:
+        self._check_stop()
+        self.url = self.sandbox.start(self.log, self.stop_event.is_set)
+        return self.url
 
     def run_command(self, command: str) -> str:
         self._check_stop()
         self.log(f"[run_command] {command}")
-        result = self.container().exec_run(["sh", "-c", command], demux=True)
-        stdout, stderr = result.output
-        output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
-        self.log(f"[run_command] exit={result.exit_code} output={output[:500]!r}")
-        return output or f"(no output, exit code {result.exit_code})"
+        exit_code, output = self.sandbox.exec(command)
+        self.log(f"[run_command] exit={exit_code} output={output[:500]!r}")
+        return output or f"(no output, exit code {exit_code})"
 
     def write_file(self, path: str, content: str) -> str:
         self._check_stop()
         self.log(f"[write_file] {path} ({len(content)} 字节)")
-        data = content.encode()
-        tar_stream = io.BytesIO()
-        with tarfile.open(fileobj=tar_stream, mode="w") as tar:
-            info = tarfile.TarInfo(name=path.lstrip("/"))
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-        tar_stream.seek(0)
-        self.container().put_archive("/", tar_stream)
+        self.sandbox.put_archive(_build_tar(path, content))
         return f"已写入 {path}"
 
     def run(self, task: str, max_steps: int = MAX_STEPS) -> str:
+        url = self.url or f"http://localhost:{self.host_port}"
         messages = [
-            {"role": "system", "content": build_system_instruction(self.host_port)},
+            {"role": "system", "content": build_system_instruction(url)},
             {"role": "user", "content": task},
         ]
 
@@ -234,15 +286,12 @@ class Agent:
         return "(reached max steps without a final answer)"
 
     def remove(self):
-        try:
-            self.container().remove(force=True)
-        except docker.errors.NotFound:
-            pass
+        self.sandbox.remove()
 
 
 # --- Module-level compatibility wrappers so the existing CLI and tests,
 # which call these as free functions against the one default sandbox
-# container, keep working unchanged. ---
+# container, keep working unchanged. Always Docker-backed. ---
 
 _default_agent = None
 

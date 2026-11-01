@@ -3,7 +3,9 @@ concurrently, track their state for a dashboard.
 
 Kept deliberately dependency-injectable (run_fn/decompose_fn/remove_container_fn)
 so tests/test_orchestrator.py can exercise the real queueing/concurrency/stop
-logic with fakes — no Docker or Ollama needed.
+logic with fakes — no Docker, Kubernetes, or Ollama needed. make_run_fn()
+builds the real run_fn for a given sandbox backend (Docker or Kubernetes);
+dashboard.py picks one based on MINI_DEVIN_BACKEND.
 """
 
 import json
@@ -22,7 +24,7 @@ MAX_SUBTASKS = 6  # clamp so a 7b model can't fan a task out into 20 pieces
 # state, so the planner must only choose it when subtasks are truly
 # independent — the prompt states this explicitly and biases toward serial.
 PLANNER_PROMPT = """你是任务规划器。判断用户任务能否拆成多个【互相独立】的子任务并行执行。
-重要：每个子任务会在一台【独立、互不相通】的 Docker 容器里由不同的助手完成，它们看不到彼此的文件或结果。
+重要：每个子任务会在一个【独立、互不相通】的沙箱容器里由不同的助手完成，它们看不到彼此的文件或结果。
 - 只有子任务之间不共享文件、不依赖彼此输出、没有先后顺序时，才选 "parallel"。
 - 有先后依赖、要修改同一个项目、或任务本身很简单时，选 "serial"。拿不准就选 "serial"。
 - 子任务最多 %d 个，每个都必须是能独立完成的完整描述。
@@ -124,7 +126,7 @@ class AgentRecord:
     task: str
     max_steps: int
     status: str = "queued"  # queued | running | done | error | stopped
-    host_port: int = None
+    url: str = None
     created_at: float = 0.0
     started_at: float = None
     finished_at: float = None
@@ -141,8 +143,7 @@ class AgentRecord:
             "container_name": self.container_name,
             "task": self.task,
             "status": self.status,
-            "host_port": self.host_port,
-            "url": f"http://localhost:{self.host_port}" if self.host_port else None,
+            "url": self.url,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -174,17 +175,17 @@ class JobRecord:
         }
 
 
-def default_run_fn(orch, rec, log):
-    agent = md.Agent(
-        rec.container_name,
-        host_port=None,
-        log=log,
-        stop_event=rec.stop_event,
-        labels=md.AGENT_LABEL,
-    )
-    agent.start_sandbox()
-    orch.set_port(rec.id, agent.host_port)
-    return agent.run(rec.task, max_steps=rec.max_steps)
+def make_run_fn(sandbox_factory):
+    """Build a run_fn for a given sandbox backend (Docker or Kubernetes) —
+    the Orchestrator itself doesn't know or care which one it's using."""
+    def run_fn(orch, rec, log):
+        agent = md.Agent(rec.container_name, sandbox=sandbox_factory(rec), log=log, stop_event=rec.stop_event)
+        orch.set_url(rec.id, agent.start_sandbox())
+        return agent.run(rec.task, max_steps=rec.max_steps)
+    return run_fn
+
+
+default_run_fn = make_run_fn(lambda rec: md.DockerSandbox(rec.container_name, None, md.AGENT_LABEL))
 
 
 def default_remove_container_fn(container_name):
@@ -278,11 +279,11 @@ class Orchestrator:
             rec.logs.append(timestamped)
             rec.last_action = line[:120]
 
-    def set_port(self, agent_id: str, port: int):
+    def set_url(self, agent_id: str, url: str):
         with self._lock:
             rec = self._agents.get(agent_id)
             if rec is not None:
-                rec.host_port = port
+                rec.url = url
 
     def stop(self, agent_id: str) -> bool:
         with self._lock:

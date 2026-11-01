@@ -67,6 +67,15 @@ if has docker_cask_installed_by_script; then
     fi
 fi
 
+if command -v kubectl >/dev/null 2>&1 && kubectl --context minikube get namespace mini-devin >/dev/null 2>&1; then
+    read -r -p "删除 mini-devin 命名空间（里面是 dashboard 创建的所有 Deployment/Service/Ingress/Secret）？[y/N] " reply
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+        kubectl --context minikube delete namespace mini-devin
+    else
+        echo "  跳过删除 mini-devin 命名空间"
+    fi
+fi
+
 if has brew_installed_by_script; then
     echo "  注意: install.sh 当时还安装了 Homebrew 本身。"
     echo "  Homebrew 可能被其他软件依赖，本脚本不会自动卸载它；"

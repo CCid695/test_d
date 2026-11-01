@@ -1,10 +1,11 @@
 """Unit tests for orchestrator.py's queueing/concurrency/stop logic and the
 dashboard's Flask routes.
 
-Deliberately uses fake run_fn/decompose_fn — no Docker, no Ollama — so this
-runs fast and deterministically in CI. The real Docker-control-plane path is
-covered separately by tests/test_sandbox.py; the real LLM path is only
-exercised manually (see README.md), same as the single-agent CLI.
+Deliberately uses fake run_fn/decompose_fn — no Docker, no Kubernetes, no
+Ollama — so this runs fast and deterministically in CI. The real
+Docker-control-plane path is covered by tests/test_sandbox.py, the
+Kubernetes-backed one by tests/test_k8s_sandbox.py; the real LLM path is
+only exercised manually (see README.md), same as the single-agent CLI.
 """
 
 import json
@@ -185,24 +186,49 @@ class FakeOrch:
 def test_dashboard_routes():
     from dashboard import create_app
 
-    app = create_app(FakeOrch())
+    token = "t3st-token"
+    app = create_app(FakeOrch(), token)
     client = app.test_client()
+    auth = {"Authorization": f"Bearer {token}"}
 
+    # GET routes stay open — no token needed.
     res = client.get("/api/state")
     assert res.status_code == 200
     assert res.get_json()["max_concurrent"] == 3
 
-    res = client.post("/api/tasks", json={"task": "do something"})
+    res = client.post("/api/tasks", json={"task": "do something"}, headers=auth)
     assert res.status_code == 202
     assert res.get_json()["job_id"] == "job123"
 
-    res = client.post("/api/tasks", json={"task": "   "})
+    res = client.post("/api/tasks", json={"task": "   "}, headers=auth)
     assert res.status_code == 400
 
-    res = client.post("/api/tasks", data="not json", content_type="text/plain")
+    res = client.post("/api/tasks", data="not json", content_type="text/plain", headers=auth)
     assert res.status_code == 400
 
-    assert client.post("/api/agents/unknown/stop").status_code == 404
-    assert client.post("/api/agents/known/stop").status_code == 200
-    assert client.post("/api/agents/unknown/kill").status_code == 404
-    assert client.post("/api/agents/known/kill").status_code == 200
+    assert client.post("/api/agents/unknown/stop", headers=auth).status_code == 404
+    assert client.post("/api/agents/known/stop", headers=auth).status_code == 200
+    assert client.post("/api/agents/unknown/kill", headers=auth).status_code == 404
+    assert client.post("/api/agents/known/kill", headers=auth).status_code == 200
+
+
+def test_dashboard_routes_require_token():
+    from dashboard import create_app
+
+    app = create_app(FakeOrch(), "correct-token")
+    client = app.test_client()
+
+    # No Authorization header at all.
+    res = client.post("/api/tasks", json={"task": "do something"})
+    assert res.status_code == 401
+
+    # Wrong token.
+    res = client.post("/api/tasks", json={"task": "do something"}, headers={"Authorization": "Bearer wrong"})
+    assert res.status_code == 401
+
+    # Right token but not a Bearer header.
+    res = client.post("/api/tasks", json={"task": "do something"}, headers={"Authorization": "correct-token"})
+    assert res.status_code == 401
+
+    # GET routes still don't need it.
+    assert client.get("/api/state").status_code == 200

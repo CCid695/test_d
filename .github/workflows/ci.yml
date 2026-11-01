@@ -16,7 +16,7 @@ jobs:
           python-version: "3.11"
 
       - name: Python syntax check
-        run: python -m py_compile mini_devin.py orchestrator.py dashboard.py
+        run: python -m py_compile mini_devin.py orchestrator.py dashboard.py k8s_backend.py
 
       - name: Shell syntax check
         run: |
@@ -50,5 +50,39 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest
 
-      - name: Run Docker sandbox smoke test
+      # test_k8s_sandbox.py skips itself here (no cluster reachable) — the
+      # k8s-sandbox-test job below covers that path against a real KinD
+      # cluster instead. test_k8s_manifests.py needs no cluster and runs
+      # normally as part of this.
+      - name: Run Docker sandbox + orchestrator smoke tests
         run: pytest tests/ -v
+
+  k8s-sandbox-test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create KinD cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: mini-devin-test
+
+      # This targets the riskiest new code — exec-over-websocket, the
+      # stdin/tar trick, per-sandbox client isolation — against a real API
+      # server. It deliberately doesn't install ingress-nginx: these tests
+      # never touch Ingress routing, only create/delete the object (valid
+      # even with no controller watching it); actual Ingress+port-forward
+      # routing is checked manually against minikube (see README.md).
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run Kubernetes sandbox tests
+        env:
+          MINI_DEVIN_REQUIRE_K8S: "1"
+          MINI_DEVIN_KUBE_CONTEXT: kind-mini-devin-test
+        run: pytest tests/test_k8s_sandbox.py -v

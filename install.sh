@@ -92,6 +92,34 @@ else
     echo "$OLLAMA_MODEL 已存在，跳过下载"
 fi
 
+echo "==> 检查 Kubernetes（dashboard 的 k8s 后端需要，可选）"
+K8S_READY=1
+if ! command -v kubectl >/dev/null 2>&1; then
+    echo "未检测到 kubectl，跳过 k8s 检查（dashboard 默认用的是 k8s 后端，建议装上 kubectl）"
+    K8S_READY=0
+elif ! command -v minikube >/dev/null 2>&1; then
+    echo "未检测到 minikube，跳过 k8s 检查"
+    K8S_READY=0
+elif ! kubectl --context minikube cluster-info --request-timeout=5s >/dev/null 2>&1; then
+    echo "minikube 集群连不上（kubectl --context minikube cluster-info 失败）"
+    K8S_READY=0
+elif ! kubectl --context minikube get ingressclass nginx >/dev/null 2>&1; then
+    echo "minikube 集群里没有 ingress-nginx（kubectl get ingressclass nginx 失败）"
+    K8S_READY=0
+fi
+if [ "$K8S_READY" = "0" ]; then
+    cat <<'EOF'
+k8s 后端暂时不可用。修复方式（任选）:
+  minikube start --driver=docker && minikube addons enable ingress
+或者跳过 k8s，直接用 Docker 后端:
+  MINI_DEVIN_BACKEND=docker python3 dashboard.py
+(本脚本不会自动安装/启动 minikube——集群的 driver、资源分配这些是机器相关的选择，
+ 自动装或自动删都可能影响你机器上其它已经在跑的集群负载，所以这里只检查不动手。)
+EOF
+else
+    echo "kubectl/minikube/ingress-nginx 都正常"
+fi
+
 echo "==> 创建 Python 虚拟环境 ($VENV_DIR)"
 if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
@@ -119,14 +147,15 @@ fi
 cat <<EOF
 
 安装完成。运行方式:
-  单 agent（命令行）:
+  单 agent（命令行，始终用 Docker 沙箱）:
     source "$VENV_DIR/bin/activate"
     python3 mini_devin.py "帮我写个网页并运行"
 
-  多 agent 调度台（网页）:
+  多 agent 调度台（网页，默认用 Kubernetes 沙箱）:
     source "$VENV_DIR/bin/activate"
     python3 dashboard.py
-    然后打开 http://localhost:5050
+    然后打开 http://localhost:5050（dashboard 启动日志里会打印取 token 的命令）
+    k8s 集群不可用的话，改用 Docker 后端: MINI_DEVIN_BACKEND=docker python3 dashboard.py
 
 卸载请运行 ./uninstall.sh（只会移除本脚本自己安装的东西）。
 EOF

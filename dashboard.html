@@ -25,10 +25,19 @@
   .badge.stopped { background: #7a7a7a; }
   .logs { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.75rem; max-height: 8rem; overflow: auto; background: #fafafa; padding: 0.4rem; margin-top: 0.25rem; }
   .task-cell { max-width: 22rem; white-space: pre-wrap; }
+  #token-bar { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+  #token-bar input { flex: 1; font: inherit; }
+  #token-hint { color: #c0392b; font-size: 0.85rem; margin: -0.5rem 0 1rem; display: none; }
 </style>
 </head>
 <body>
 <h1>mini-devin 调度台</h1>
+
+<div id="token-bar">
+  <input id="token" type="password" placeholder="dashboard token（见 README / 启动日志）">
+  <button id="save-token">保存</button>
+</div>
+<div id="token-hint">令牌无效或缺失，运行启动日志里打印的 kubectl 命令获取 token，粘贴到上面保存。</div>
 
 <textarea id="task" placeholder="描述一个任务，例如：写三个互不相关的静态网页：猫、狗、天气"></textarea>
 <button id="submit">提交任务</button>
@@ -40,6 +49,33 @@ const submitBtn = document.getElementById('submit');
 const taskInput = document.getElementById('task');
 const statusEl = document.getElementById('status');
 const jobsEl = document.getElementById('jobs');
+const tokenInput = document.getElementById('token');
+const tokenHint = document.getElementById('token-hint');
+const saveTokenBtn = document.getElementById('save-token');
+
+try {
+  tokenInput.value = localStorage.getItem('miniDevinToken') || '';
+} catch (e) { /* private browsing etc. — just start blank */ }
+
+saveTokenBtn.addEventListener('click', () => {
+  try {
+    localStorage.setItem('miniDevinToken', tokenInput.value.trim());
+  } catch (e) { /* ignore */ }
+  tokenHint.style.display = 'none';
+});
+
+// Authenticated POST — never injects the token into the page itself (it's
+// typed/pasted by the person using this browser), only attaches it as a
+// header on same-origin requests this page initiates.
+async function authPost(path) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${tokenInput.value.trim()}` },
+  });
+  if (res.status === 401) tokenHint.style.display = 'block';
+  else tokenHint.style.display = 'none';
+  return res;
+}
 
 submitBtn.addEventListener('click', async () => {
   const task = taskInput.value.trim();
@@ -48,10 +84,14 @@ submitBtn.addEventListener('click', async () => {
   try {
     const res = await fetch('/api/tasks', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${tokenInput.value.trim()}`,
+      },
       body: JSON.stringify({ task }),
     });
-    if (res.ok) taskInput.value = '';
+    if (res.status === 401) tokenHint.style.display = 'block';
+    else { tokenHint.style.display = 'none'; if (res.ok) taskInput.value = ''; }
     await refresh();
   } finally {
     submitBtn.disabled = false;
@@ -62,7 +102,7 @@ jobsEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-action]');
   if (!btn) return;
   btn.disabled = true;
-  await fetch(`/api/agents/${btn.dataset.agent}/${btn.dataset.action}`, { method: 'POST' });
+  await authPost(`/api/agents/${btn.dataset.agent}/${btn.dataset.action}`);
   await refresh();
 });
 
