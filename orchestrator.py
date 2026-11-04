@@ -16,6 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+import config as cfg
 import k8s_backend as kb
 import mini_devin as md
 
@@ -101,14 +102,10 @@ class Plan:
     roles: list = field(default_factory=list)  # only populated for "collaborate"
 
 
-def _parse_roles(raw_roles):
-    """Pure helper: validate the collaborate "roles" shape.
+def _validate_roles_shape(raw_roles):
+    """Validate that raw_roles is a list with exactly 3 usable entries.
 
-    Returns (roles, forced_chain) where forced_chain is True if the
-    dependency graph had to be replaced with a straight chain because it
-    was malformed (unknown/forward/self reference, duplicate names, bad
-    types). Returns None if the shape can't be collaborate at all (not a
-    list, or not exactly 3 usable entries) — caller falls back to serial.
+    Returns the list of usable role dicts, or None if the shape is invalid.
     """
     if not isinstance(raw_roles, list):
         return None
@@ -117,9 +114,15 @@ def _parse_roles(raw_roles):
     if len(usable) != 3:
         return None
 
-    raw_names = [str(r.get("name") or "").strip()[:MAX_ROLE_NAME] for r in usable]
-    tasks = [str(r["task"]).strip()[:MAX_ROLE_TASK] for r in usable]
+    return usable
 
+
+def _normalize_role_names(raw_names):
+    """Deduplicate and normalize role names.
+
+    Returns (normalized_names, had_duplicates) where had_duplicates is True
+    if any non-empty names were duplicated.
+    """
     non_empty_names = [n for n in raw_names if n]
     had_duplicate_names = len(set(non_empty_names)) != len(non_empty_names)
 
@@ -132,13 +135,18 @@ def _parse_roles(raw_roles):
         seen.add(n)
         names.append(n)
 
-    # Look up depends_on against the ORIGINAL (pre-dedup) names, since
-    # that's what the model actually wrote; duplicates already force a
-    # chain fallback below, so any ambiguity here is moot.
-    name_to_index = {n: i for i, n in enumerate(raw_names) if n}
+    return names, had_duplicate_names
 
-    graph_ok = not had_duplicate_names
+
+def _resolve_dependencies(usable, raw_names, name_to_index):
+    """Resolve role dependencies from the raw role data.
+
+    Returns (deps_list, graph_ok) where graph_ok is False if any dependency
+    reference is invalid (unknown, forward, or self-reference).
+    """
     deps_list = []
+    graph_ok = True
+
     for i, r in enumerate(usable):
         raw_deps = r.get("depends_on")
         if raw_deps is None:
@@ -161,7 +169,35 @@ def _parse_roles(raw_roles):
                 resolved.append(idx)
         deps_list.append(resolved)
 
-    forced_chain = not graph_ok
+    return deps_list, graph_ok
+
+
+def _parse_roles(raw_roles):
+    """Pure helper: validate the collaborate "roles" shape.
+
+    Returns (roles, forced_chain) where forced_chain is True if the
+    dependency graph had to be replaced with a straight chain because it
+    was malformed (unknown/forward/self reference, duplicate names, bad
+    types). Returns None if the shape can't be collaborate at all (not a
+    list, or not exactly 3 usable entries) — caller falls back to serial.
+    """
+    usable = _validate_roles_shape(raw_roles)
+    if usable is None:
+        return None
+
+    raw_names = [str(r.get("name") or "").strip()[:MAX_ROLE_NAME] for r in usable]
+    tasks = [str(r["task"]).strip()[:MAX_ROLE_TASK] for r in usable]
+
+    names, had_duplicate_names = _normalize_role_names(raw_names)
+
+    # Look up depends_on against the ORIGINAL (pre-dedup) names, since
+    # that's what the model actually wrote; duplicates already force a
+    # chain fallback below, so any ambiguity here is moot.
+    name_to_index = {n: i for i, n in enumerate(raw_names) if n}
+
+    deps_list, graph_ok = _resolve_dependencies(usable, raw_names, name_to_index)
+
+    forced_chain = not graph_ok or had_duplicate_names
     if forced_chain:
         deps_list = [[] if i == 0 else [i - 1] for i in range(3)]
 
@@ -633,31 +669,26 @@ class Orchestrator:
                 job.agent_ids.append(agent_id)
                 rec.future = self._pool.submit(self._run_agent, rec)
 
-    def _dispatch_collaboration_locked(self, job: JobRecord, plan: Plan):
-        shared_name = f"mini-devin-agent-{job.id}-shared"
-        sandbox_id = f"{job.id}-shared"
-        job.shared_container = shared_name
+    def _create_role_record(self, job: JobRecord, role: Role, idx: int, shared_name: str, sandbox_id: str) -> AgentRecord:
+        """Create an AgentRecord for a single role in a collaborate job."""
+        agent_id = f"{job.id}-{idx}"
+        rec = AgentRecord(
+            id=agent_id,
+            job_id=job.id,
+            container_name=shared_name,
+            task=role.task,
+            max_steps=ROLE_MAX_STEPS,
+            status="waiting",
+            created_at=time.time(),
+            kind="role",
+            role=role.name,
+            depends_on=[f"{job.id}-{d}" for d in role.depends_on],
+            sandbox_id=sandbox_id,
+        )
+        return rec
 
-        role_recs = []
-        for i, role in enumerate(plan.roles):
-            agent_id = f"{job.id}-{i}"
-            rec = AgentRecord(
-                id=agent_id,
-                job_id=job.id,
-                container_name=shared_name,
-                task=role.task,
-                max_steps=ROLE_MAX_STEPS,
-                status="waiting",
-                created_at=time.time(),
-                kind="role",
-                role=role.name,
-                depends_on=[f"{job.id}-{d}" for d in role.depends_on],
-                sandbox_id=sandbox_id,
-            )
-            self._agents[agent_id] = rec
-            job.agent_ids.append(agent_id)
-            role_recs.append(rec)
-
+    def _create_integrator_record(self, job: JobRecord, role_recs: list, shared_name: str, sandbox_id: str) -> AgentRecord:
+        """Create the integrator AgentRecord for a collaborate job."""
         integrator_id = f"{job.id}-int"
         integrator = AgentRecord(
             id=integrator_id,
@@ -674,8 +705,23 @@ class Orchestrator:
             min_tool_calls=INTEGRATOR_MIN_TOOL_CALLS,
             max_seconds=INTEGRATOR_MAX_SECONDS,
         )
-        self._agents[integrator_id] = integrator
-        job.agent_ids.append(integrator_id)
+        return integrator
+
+    def _dispatch_collaboration_locked(self, job: JobRecord, plan: Plan):
+        shared_name = f"mini-devin-agent-{job.id}-shared"
+        sandbox_id = f"{job.id}-shared"
+        job.shared_container = shared_name
+
+        role_recs = []
+        for i, role in enumerate(plan.roles):
+            rec = self._create_role_record(job, role, i, shared_name, sandbox_id)
+            self._agents[rec.id] = rec
+            job.agent_ids.append(rec.id)
+            role_recs.append(rec)
+
+        integrator = self._create_integrator_record(job, role_recs, shared_name, sandbox_id)
+        self._agents[integrator.id] = integrator
+        job.agent_ids.append(integrator.id)
 
         self._advance_job_locked(job.id)
 

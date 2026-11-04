@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from kubernetes import client
 
-import mini_devin as md
+import config as cfg
 from k8s_backend import (
     INGRESS_LOCAL_PORT,
     agent_labels,
@@ -33,7 +33,7 @@ def test_deployment_hardens_the_pod():
     dep = build_deployment(NAME, AGENT_ID)
     pod_spec = dep.spec.template.spec
     assert pod_spec.automount_service_account_token is False
-    assert pod_spec.containers[0].image == md.IMAGE
+    assert pod_spec.containers[0].image == cfg.IMAGE
     assert pod_spec.containers[0].command == ["sleep", "infinity"]
 
 

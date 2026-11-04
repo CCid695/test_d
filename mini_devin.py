@@ -23,6 +23,8 @@ import time
 
 from openai import OpenAI
 
+import config as cfg
+
 
 def _load_dotenv(path):
     if not os.path.exists(path):
@@ -46,15 +48,8 @@ MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 MAX_STEPS = 10
 
-IMAGE = "python:3.11-slim"
-SANDBOX_PORT = 8000  # the port a sandbox's own HTTP server listens on
-
 CLI_CONTAINER_NAME = "mini-devin-cli"
 CLI_AGENT_ID = "cli"
-
-# Tag every agent-created sandbox with this label so a dashboard/orchestrator
-# can find and clean up ones left over from a previous run.
-AGENT_LABEL = {"mini-devin.role": "agent"}
 
 # api_key is unused by Ollama; timeout guards against one hung generation
 # pinning a worker thread forever when multiple agents run concurrently.
@@ -73,9 +68,9 @@ def build_system_instruction(url: str) -> str:
 - run_command: 在沙箱内执行 shell 命令
 - write_file: 在沙箱内写文件
 
-沙箱内 {SANDBOX_PORT} 端口已经映射到 {url}。
+沙箱内 {cfg.SANDBOX_PORT} 端口已经映射到 {url}。
 如果用户要求写网页并运行，请把静态文件写到 /app 目录下，
-然后用类似 `cd /app && nohup python3 -m http.server {SANDBOX_PORT} > /tmp/server.log 2>&1 &`
+然后用类似 `cd /app && nohup python3 -m http.server {cfg.SANDBOX_PORT} > /tmp/server.log 2>&1 &`
 的命令在后台启动一个 HTTP 服务器（注意加 & 后台运行，不要阻塞），
 最后告诉用户可以通过 {url} 访问。
 网页里引用其它文件（比如 style.css、图片）请用相对路径，不要以 / 开头。
@@ -177,6 +172,82 @@ class Agent:
         self.sandbox.put_archive(_build_tar(path, content))
         return f"已写入 {path}"
 
+    def _build_messages(self, task: str, extra_system: str = None) -> list:
+        """Build the initial message list for the LLM conversation."""
+        url = self.url or "(unknown URL — start_sandbox() wasn't called first)"
+        system_content = build_system_instruction(url)
+        if extra_system:
+            system_content += "\n\n" + extra_system
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": task},
+        ]
+
+    def _check_time_budget(self, start: float, max_seconds: float, tool_call_count: int) -> tuple:
+        """Check if time budget is exhausted.
+
+        Returns (should_stop, timeout_value) where should_stop is True if
+        the budget is exhausted, and timeout_value is the remaining time
+        (or None if no max_seconds is set).
+        """
+        if max_seconds is None:
+            return False, None
+
+        remaining = max_seconds - (time.monotonic() - start)
+        if remaining <= 0:
+            return True, None
+        return False, remaining
+
+    def _make_llm_call(self, messages: list, max_seconds: float = None, start: float = None) -> tuple:
+        """Make an LLM call with optional timeout budget.
+
+        Returns (message, timed_out) where timed_out is True if the call
+        hit the time budget.
+        """
+        call_kwargs = {"model": MODEL, "messages": messages, "tools": TOOLS}
+        if max_seconds is not None and start is not None:
+            should_stop, timeout = self._check_time_budget(start, max_seconds, 0)
+            if should_stop:
+                return None, True
+            call_kwargs["timeout"] = timeout
+
+        try:
+            response = self.llm.chat.completions.create(**call_kwargs)
+            return response.choices[0].message, False
+        except Exception:
+            if max_seconds is not None and start is not None:
+                if time.monotonic() - start >= max_seconds - 0.5:
+                    return None, True
+            raise
+
+    def _handle_tool_calls(self, tool_calls, messages: list) -> int:
+        """Execute tool calls and append results to messages.
+
+        Returns the number of tool calls executed.
+        """
+        tool_call_count = 0
+        for call in tool_calls:
+            self._check_stop()
+            try:
+                fn = self.tool_functions[call.function.name]
+                args = json.loads(call.function.arguments)
+                result = fn(**args)
+                tool_call_count += 1
+            except AgentStopped:
+                raise
+            except Exception as exc:
+                result = f"error calling {call.function.name}: {exc}"
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+        return tool_call_count
+
+    def _build_nudge_message(self, tool_call_count: int, nudge: str = None) -> str:
+        """Build a nudge message when the model tries to stop early."""
+        return nudge or (
+            f"你只实际调用了 {tool_call_count} 次工具，还没有真的完成要求的验证步骤。"
+            "不要在文字里描述你「做了」什么——必须真的调用 run_command/write_file，"
+            "用工具的真实返回结果作为依据，再给出结论。"
+        )
+
     def run(self, task: str, max_steps: int = MAX_STEPS, extra_system: str = None,
             min_tool_calls: int = None, nudge: str = None, max_seconds: float = None) -> str:
         """Run the tool-calling loop.
@@ -199,61 +270,27 @@ class Agent:
         itself blow past the deadline. A timeout on that call is treated as
         "ran out of time," not an error.
         """
-        url = self.url or "(unknown URL — start_sandbox() wasn't called first)"
-        system_content = build_system_instruction(url)
-        if extra_system:
-            system_content += "\n\n" + extra_system
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": task},
-        ]
+        messages = self._build_messages(task, extra_system)
 
         start = time.monotonic()
         tool_call_count = 0
         for _ in range(max_steps):
             self._check_stop()
 
-            call_kwargs = {"model": MODEL, "messages": messages, "tools": TOOLS}
-            if max_seconds is not None:
-                remaining = max_seconds - (time.monotonic() - start)
-                if remaining <= 0:
-                    return (f"(超过 {max_seconds:.0f} 秒时间上限，已停止验证；"
-                             f"期间完成了 {tool_call_count} 次真实工具调用)")
-                call_kwargs["timeout"] = remaining
+            message, timed_out = self._make_llm_call(messages, max_seconds, start)
+            if timed_out:
+                return (f"(超过 {max_seconds:.0f} 秒时间上限，已停止验证；"
+                         f"期间完成了 {tool_call_count} 次真实工具调用)")
 
-            try:
-                response = self.llm.chat.completions.create(**call_kwargs)
-            except Exception:
-                if max_seconds is not None and time.monotonic() - start >= max_seconds - 0.5:
-                    return (f"(超过 {max_seconds:.0f} 秒时间上限，已停止验证；"
-                             f"期间完成了 {tool_call_count} 次真实工具调用)")
-                raise
-
-            message = response.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
 
             if not message.tool_calls:
                 if min_tool_calls is not None and tool_call_count < min_tool_calls:
-                    messages.append({"role": "user", "content": nudge or (
-                        f"你只实际调用了 {tool_call_count} 次工具，还没有真的完成要求的验证步骤。"
-                        "不要在文字里描述你「做了」什么——必须真的调用 run_command/write_file，"
-                        "用工具的真实返回结果作为依据，再给出结论。"
-                    )})
+                    messages.append({"role": "user", "content": self._build_nudge_message(tool_call_count, nudge)})
                     continue
                 return message.content
 
-            for call in message.tool_calls:
-                self._check_stop()
-                try:
-                    fn = self.tool_functions[call.function.name]
-                    args = json.loads(call.function.arguments)
-                    result = fn(**args)
-                    tool_call_count += 1
-                except AgentStopped:
-                    raise
-                except Exception as exc:
-                    result = f"error calling {call.function.name}: {exc}"
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+            tool_call_count += self._handle_tool_calls(message.tool_calls, messages)
 
         return "(reached max steps without a final answer)"
 
@@ -263,8 +300,7 @@ class Agent:
 
 # --- Module-level compatibility wrappers so the existing CLI and tests keep
 # calling these as free functions against the one default sandbox. Always
-# Kubernetes-backed — k8s_backend is imported lazily (inside the function,
-# not at module load) because k8s_backend.py itself imports this module. ---
+# Kubernetes-backed. ---
 
 _default_agent = None
 

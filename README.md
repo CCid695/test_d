@@ -234,6 +234,117 @@ reachable from your LAN.
    drops the right resources
 ```
 
+## Troubleshooting
+
+### Common Issues
+
+**"无法加载 kubeconfig" / "kubeconfig not found"**
+- Ensure your Kubernetes cluster is running: `minikube status`
+- Verify the context exists: `kubectl config get-contexts`
+- Check the context name matches `MINI_DEVIN_KUBE_CONTEXT` (default: `minikube`)
+- If using a different cluster, set the environment variable: `export MINI_DEVIN_KUBE_CONTEXT=your-context`
+
+**"ingress-nginx not found"**
+- The ingress-nginx controller is required for routing to work
+- Install it on minikube: `minikube addons enable ingress`
+- Verify it's running: `kubectl get ingressclass nginx`
+- If using a different cluster, install ingress-nginx following their documentation
+
+**"Ollama 服务未运行" / "Ollama service not running"**
+- Check if Ollama is installed: `which ollama`
+- Start the Ollama server: `ollama serve`
+- Verify it's responding: `curl http://localhost:11434/api/tags`
+- For concurrent agents, ensure `OLLAMA_NUM_PARALLEL=3` is set when starting the server
+
+**"模型未找到" / "Model not found"**
+- List available models: `ollama list`
+- Pull the required model: `ollama pull qwen2.5:7b`
+- If using a different model, set `OLLAMA_MODEL` in `.env` or as an environment variable
+
+**"Pod did not become ready within timeout"**
+- Check pod status: `kubectl -n mini-devin get pods`
+- View pod logs: `kubectl -n mini-devin logs <pod-name>`
+- Common causes:
+  - Image pull failure (check `docker images` and network connectivity)
+  - Resource limits (increase CPU/memory in k8s_backend.py if needed)
+  - Node not ready: `kubectl get nodes`
+
+**"port-forward: connection refused"**
+- Ensure ingress-nginx controller is running: `kubectl -n ingress-nginx get pods`
+- Check the service exists: `kubectl -n ingress-nginx get svc ingress-nginx-controller`
+- Verify the context is correct: `kubectl --context minikube cluster-info`
+
+**Dashboard shows "令牌无效" / "Token invalid"**
+- Retrieve the token using the command printed at dashboard startup
+- The command is: `kubectl --context minikube -n mini-devin get secret mini-devin-dashboard-token -o jsonpath='{.data.token}' | base64 -d`
+- Copy the entire token (no extra spaces or newlines)
+- If the secret was deleted, restart `dashboard.py` to recreate it
+
+**Agent URL returns 404 or 502**
+- Check the agent pod is running: `kubectl -n mini-devin get pods -l mini-devin.agent-id=<agent-id>`
+- Verify the Ingress exists: `kubectl -n mini-devin get ingress`
+- Check ingress-nginx controller logs: `kubectl -n ingress-nginx logs -l app.kubernetes.io/name=ingress-nginx`
+- Ensure the HTTP server inside the pod is actually running on port 8000
+
+**"integrated verification failed" / "final_verified: false"**
+- This means the integrator couldn't verify the work using file/process/network checks
+- Check the integrator's logs in the dashboard to see what it actually ran
+- Common causes:
+  - Server not started (no process found in /proc)
+  - Wrong port (service listening on port other than 8000)
+  - Network unreachable (service bound to localhost instead of 0.0.0.0)
+- The integrator can sometimes fix minor issues (missing app.run call), but major problems require manual intervention
+
+**Tests fail with "MINI_DEVIN_REQUIRE_K8S"**
+- Some tests require a real Kubernetes cluster
+- Run with `MINI_DEVIN_REQUIRE_K8S=1 pytest tests/` to enable these tests
+- Ensure your cluster context is set correctly: `export MINI_DEVIN_KUBE_CONTEXT=your-context`
+- Without this flag, tests that require K8s will be skipped
+
+**Python import errors after refactoring**
+- After the config.py refactoring, ensure all files import from the new module
+- Verify: `python3 -m py_compile config.py mini_devin.py orchestrator.py dashboard.py k8s_backend.py`
+- If circular import errors persist, check that mini_devin.py no longer imports k8s_backend at the top level
+
+### Debugging Tips
+
+**View all mini-devin resources:**
+```bash
+kubectl -n mini-devin get all
+kubectl -n mini-devin get ingress
+```
+
+**Check pod logs for an agent:**
+```bash
+kubectl -n mini-devin logs -l mini-devin.agent-id=<agent-id> --tail=100
+```
+
+**Exec into a pod to inspect the filesystem:**
+```bash
+kubectl -n mini-devin exec -it <pod-name> -- /bin/sh
+ls -la /app
+cat /app/*.py
+```
+
+**Check ingress-nginx controller logs:**
+```bash
+kubectl -n ingress-nginx logs -l app.kubernetes.io/name=ingress-nginx
+```
+
+**Manually test port-forward:**
+```bash
+kubectl --context minikube -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80
+# Then open http://localhost:8080/agents/<id>/ in your browser
+```
+
+**Clean up stuck resources:**
+```bash
+kubectl -n mini-devin delete all --all
+kubectl -n mini-devin delete ingress --all
+# Or use the project's cleanup:
+python3 -c "import k8s_backend as kb; kb.delete_labeled_resources()"
+```
+
 ## Configuration
 
 | Variable          | Required | Default        | Notes                                                        |
@@ -329,6 +440,14 @@ exercised locally (`./install.sh` + the manual checklist above).
 - `.github/workflows/ci.yml` — CI pipeline (see above)
 - `.install_manifest` — generated by `install.sh`; tracks what it installed
 - `.env` — generated by `install.sh`; non-secret config only
+
+## Language policy
+
+This project uses a bilingual approach:
+- **User-facing content**: Chinese (system prompts, dashboard UI, user-facing error messages)
+- **Developer-facing content**: English (code comments, technical error messages, API docs)
+
+This design choice reflects the target user base (Chinese-speaking users interacting with the dashboard) while maintaining English as the language for code maintainability and international developer collaboration.
 
 ## Security notes
 

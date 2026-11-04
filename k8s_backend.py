@@ -19,6 +19,7 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream
 
+import config as cfg
 import mini_devin as md
 
 NAMESPACE = "mini-devin"
@@ -97,7 +98,7 @@ def ensure_namespace():
 
 def agent_labels(agent_id: str) -> dict:
     return {
-        **md.AGENT_LABEL,  # {"mini-devin.role": "agent"}
+        **cfg.AGENT_LABEL,  # {"mini-devin.role": "agent"}
         "app.kubernetes.io/name": "mini-devin-sandbox",
         "app.kubernetes.io/managed-by": "mini-devin",
         "mini-devin.agent-id": agent_id,
@@ -114,7 +115,7 @@ def build_deployment(name: str, agent_id: str) -> client.V1Deployment:
 
     container = client.V1Container(
         name="sandbox",
-        image=md.IMAGE,
+        image=cfg.IMAGE,
         image_pull_policy="IfNotPresent",
         command=["sleep", "infinity"],
         ports=[client.V1ContainerPort(name="http", container_port=8000)],
@@ -280,11 +281,11 @@ class K8sSandbox:
                 last_log = now
             time.sleep(1)
 
-        raise RuntimeError(f"pod for {self.name} did not become ready within {POD_READY_TIMEOUT_S}s")
+        raise RuntimeError(f"Pod for {self.name} did not become ready within {POD_READY_TIMEOUT_S}s")
 
     def exec(self, command: str, stdin_bytes: bytes = None):
         if self._pod_name is None:
-            raise RuntimeError(f"sandbox {self.name} has no pod yet — call start() first")
+            raise RuntimeError(f"Sandbox {self.name} has no pod yet — call start() first")
 
         api = self._api()
         resp = stream(
