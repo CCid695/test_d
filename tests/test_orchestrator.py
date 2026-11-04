@@ -285,7 +285,7 @@ def test_parse_plan_collaborate_bad_graph_forces_chain(roles):
     plan = parse_plan(raw, task="ORIGINAL")
     assert plan.mode == "collaborate"
     assert [r.depends_on for r in plan.roles] == [[], [0], [1]]
-    assert "依赖关系无效" in plan.reason
+    assert "dependency graph invalid" in plan.reason
 
 
 def test_parse_plan_collaborate_wrong_role_count_falls_back_to_serial():
@@ -296,7 +296,7 @@ def test_parse_plan_collaborate_wrong_role_count_falls_back_to_serial():
     plan = parse_plan(raw, task="ORIGINAL")
     assert plan.mode == "serial"
     assert plan.subtasks == ["do a", "do b"]
-    assert "协作计划不完整" in plan.reason
+    assert "collaboration plan incomplete" in plan.reason
 
 
 def test_parse_plan_collaborate_missing_roles_falls_back_to_serial_with_original_task():
@@ -788,10 +788,10 @@ def test_build_integrator_task_includes_untrusted_marker_and_statuses():
     )
     role_b = AgentRecord(
         id="j-1", job_id="j", container_name="c", task="task b", max_steps=5,
-        status="skipped", role="B", result="上游角色未成功完成，已跳过",
+        status="skipped", role="B", result="Upstream role did not complete successfully, skipped",
     )
     text = build_integrator_task("do the thing", [role_a, role_b])
-    assert "仅供参考" in text
+    assert "for reference only" in text
     assert "A" in text and "B" in text
     assert "done" in text and "skipped" in text
     assert "start server" in text
