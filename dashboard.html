@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>mini-devin 调度台</title>
+<title>mini-devin Dashboard</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #222; }
   h1 { font-size: 1.3rem; }
@@ -40,17 +40,17 @@
 </style>
 </head>
 <body>
-<h1>mini-devin 调度台</h1>
+<h1>mini-devin Dashboard</h1>
 
 <div id="token-bar">
-  <input id="token" type="password" placeholder="dashboard token（见 README / 启动日志）">
-  <button id="save-token">保存</button>
+  <input id="token" type="password" placeholder="dashboard token (see README / startup log)">
+  <button id="save-token">Save</button>
 </div>
-<div id="token-hint">令牌无效或缺失，运行启动日志里打印的 kubectl 命令获取 token，粘贴到上面保存。</div>
+<div id="token-hint">Token invalid or missing, run the kubectl command printed in the startup log to get the token, paste it above and save.</div>
 
-<textarea id="task" placeholder="描述一个任务，例如：写三个互不相关的静态网页：猫、狗、天气"></textarea>
-<button id="submit">提交任务</button>
-<div id="status">加载中…</div>
+<textarea id="task" placeholder="Describe a task, e.g.: write three unrelated static webpages: cat, dog, weather"></textarea>
+<button id="submit">Submit Task</button>
+<div id="status">Loading...</div>
 <div id="jobs"></div>
 
 <script>
@@ -179,11 +179,11 @@ function renderCollaborateAgentRow(agent, roleNameById) {
 
   const depTd = document.createElement('td');
   if (agent.kind === 'integrator') {
-    depTd.textContent = '全部角色';
+    depTd.textContent = 'All roles';
   } else if (agent.depends_on && agent.depends_on.length) {
-    depTd.textContent = agent.depends_on.map((id) => roleNameById[id] || id).join('、');
+    depTd.textContent = agent.depends_on.map((id) => roleNameById[id] || id).join(', ');
   } else {
-    depTd.textContent = '—';
+    depTd.textContent = '-';
   }
   tr.appendChild(depTd);
 
@@ -216,12 +216,12 @@ function renderFinalResult(job) {
   box.className = 'final-result';
 
   const h4 = document.createElement('h4');
-  h4.textContent = '最终结果（整合验收）';
+  h4.textContent = 'Final Result (Integration and Verification)';
   box.appendChild(h4);
 
   if (!job.final_status) {
     const p = document.createElement('div');
-    p.textContent = '等待 3 个角色完成后由整合者验收…';
+    p.textContent = 'Waiting for integrator to verify after 3 roles complete...';
     box.appendChild(p);
     return box;
   }
@@ -235,7 +235,7 @@ function renderFinalResult(job) {
   if (job.final_verified === false) {
     const warn = document.createElement('div');
     warn.className = 'final-warning';
-    warn.textContent = '整合者没有执行任何验证命令，结论未经验证';
+    warn.textContent = 'Integrator did not execute any verification commands, conclusion is unverified';
     box.appendChild(warn);
   }
 
@@ -249,17 +249,17 @@ function renderSharedBar(agents) {
   const left = document.createElement('span');
   const withUrl = agents.find((a) => a.url);
   if (withUrl) {
-    left.appendChild(document.createTextNode('共享沙箱: '));
+    left.appendChild(document.createTextNode('Shared sandbox: '));
     const a = document.createElement('a');
     a.href = withUrl.url; a.target = '_blank'; a.textContent = withUrl.url;
     left.appendChild(a);
   } else {
-    left.textContent = '共享沙箱: （尚未就绪）';
+    left.textContent = 'Shared sandbox: (not ready yet)';
   }
   bar.appendChild(left);
 
   const killBtn = document.createElement('button');
-  killBtn.textContent = 'Kill 整个任务（删除共享沙箱）';
+  killBtn.textContent = 'Kill entire task (delete shared sandbox)';
   killBtn.dataset.action = 'kill';
   killBtn.dataset.agent = agents.length ? agents[0].id : '';
   bar.appendChild(killBtn);
@@ -270,7 +270,7 @@ function renderSharedBar(agents) {
 function renderLogs(agent) {
   const details = document.createElement('details');
   const summary = document.createElement('summary');
-  summary.textContent = `日志 (${agent.id})`;
+  summary.textContent = `Logs (${agent.id})`;
   details.appendChild(summary);
   const pre = document.createElement('div');
   pre.className = 'logs';
@@ -283,7 +283,7 @@ async function refresh() {
   const res = await fetch('/api/state');
   const state = await res.json();
 
-  statusEl.textContent = `运行中 ${state.running} / ${state.max_concurrent}，排队 ${state.queued}，等待依赖 ${state.waiting || 0}`;
+  statusEl.textContent = `Running ${state.running} / ${state.max_concurrent}, queued ${state.queued}, waiting for dependencies ${state.waiting || 0}`;
 
   jobsEl.innerHTML = '';
   const agentsByJob = {};
@@ -305,7 +305,7 @@ async function refresh() {
       const modeSpan = document.createElement('span');
       modeSpan.className = 'mode ' + job.mode;
       modeSpan.textContent = job.mode;
-      modeEl.appendChild(document.createTextNode('AI 决策: '));
+      modeEl.appendChild(document.createTextNode('AI decision: '));
       modeEl.appendChild(modeSpan);
       div.appendChild(modeEl);
 
@@ -316,7 +316,7 @@ async function refresh() {
     } else {
       const planningEl = document.createElement('div');
       planningEl.className = 'reason';
-      planningEl.textContent = '规划中…';
+      planningEl.textContent = 'Planning...';
       div.appendChild(planningEl);
     }
 
@@ -331,7 +331,7 @@ async function refresh() {
 
       const table = document.createElement('table');
       const thead = document.createElement('tr');
-      for (const h of ['角色', '依赖', '状态', '任务', '最近动作', '操作']) {
+      for (const h of ['Role', 'Dependencies', 'Status', 'Task', 'Last Action', 'Actions']) {
         const th = document.createElement('th');
         th.textContent = h;
         thead.appendChild(th);

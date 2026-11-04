@@ -112,7 +112,7 @@ point of the demo:
   the results afterward.
 - **`collaborate`** — the task is **one project** that splits into exactly
   3 substantial, differently-skilled roles (the model names them itself —
-  e.g. 接口设计/前端/后端 for a small web app). All 3 share **one sandbox**
+  e.g. interface design/frontend/backend for a small web app). All 3 share **one sandbox**
   (so, say, the frontend role can see and build on the interface-design
   role's files), and the planner also declares which roles depend on which
   — roles with no dependency between them really do run concurrently (their
@@ -211,7 +211,7 @@ yourself:
 ```bash
 TOKEN=$(kubectl --context minikube -n mini-devin get secret mini-devin-dashboard-token -o jsonpath='{.data.token}' | base64 -d)
 curl -X POST http://127.0.0.1:5050/api/tasks -H "Authorization: Bearer $TOKEN" \
-     -H 'Content-Type: application/json' -d '{"task":"写一个关于猫的静态网页并运行"}'
+     -H 'Content-Type: application/json' -d '{"task":"write a static webpage about cats and run it"}'
 ```
 
 The dashboard binds to `127.0.0.1` only — this process can run arbitrary
@@ -222,10 +222,10 @@ reachable from your LAN.
 
 ```
 1. python3 dashboard.py, open http://localhost:5050, paste the token
-2. submit: 写三个互不相关的静态网页：一个猫网页、一个狗网页、一个天气网页
+2. submit: write three unrelated static webpages: a cat webpage, a dog webpage, a weather webpage
    -> expect mode="parallel", 3 agents running concurrently, 3 distinct pages
-3. submit: 做一个留言板网站：Flask 后端提供留言的查看和提交接口，前端页面能查看和提交留言，
-   由 Flask 提供页面并在 8000 端口运行
+3. submit: create a message board website: Flask backend provides message viewing and submission interfaces, frontend page can view and submit messages,
+   served by Flask on port 8000
    -> expect mode="collaborate", 3 named roles (frontend+backend both
       depending only on interface-design, running concurrently), then the
       integrator; check job.final_verified and whether final_result
@@ -238,7 +238,7 @@ reachable from your LAN.
 
 ### Common Issues
 
-**"无法加载 kubeconfig" / "kubeconfig not found"**
+**"Unable to load kubeconfig" / "kubeconfig not found"**
 - Ensure your Kubernetes cluster is running: `minikube status`
 - Verify the context exists: `kubectl config get-contexts`
 - Check the context name matches `MINI_DEVIN_KUBE_CONTEXT` (default: `minikube`)
@@ -250,13 +250,13 @@ reachable from your LAN.
 - Verify it's running: `kubectl get ingressclass nginx`
 - If using a different cluster, install ingress-nginx following their documentation
 
-**"Ollama 服务未运行" / "Ollama service not running"**
+**"Ollama service not running"**
 - Check if Ollama is installed: `which ollama`
 - Start the Ollama server: `ollama serve`
 - Verify it's responding: `curl http://localhost:11434/api/tags`
 - For concurrent agents, ensure `OLLAMA_NUM_PARALLEL=3` is set when starting the server
 
-**"模型未找到" / "Model not found"**
+**"Model not found"**
 - List available models: `ollama list`
 - Pull the required model: `ollama pull qwen2.5:7b`
 - If using a different model, set `OLLAMA_MODEL` in `.env` or as an environment variable
@@ -274,7 +274,7 @@ reachable from your LAN.
 - Check the service exists: `kubectl -n ingress-nginx get svc ingress-nginx-controller`
 - Verify the context is correct: `kubectl --context minikube cluster-info`
 
-**Dashboard shows "令牌无效" / "Token invalid"**
+**Dashboard shows "Token invalid"**
 - Retrieve the token using the command printed at dashboard startup
 - The command is: `kubectl --context minikube -n mini-devin get secret mini-devin-dashboard-token -o jsonpath='{.data.token}' | base64 -d`
 - Copy the entire token (no extra spaces or newlines)

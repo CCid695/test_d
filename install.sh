@@ -19,146 +19,146 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
 : > "$MANIFEST"
 record() { echo "$1" >> "$MANIFEST"; }
 
-echo "==> 检查 Homebrew"
+echo "==> Checking Homebrew"
 if ! command -v brew >/dev/null 2>&1; then
-    echo "未检测到 Homebrew，正在安装最新版..."
+    echo "Homebrew not detected, installing latest version..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     record "brew_installed_by_script=1"
 else
-    echo "Homebrew 已安装，跳过"
+    echo "Homebrew already installed, skipping"
 fi
 
-echo "==> 检查 Docker"
+echo "==> Checking Docker"
 # The app itself no longer talks to Docker directly — every sandbox is a
 # real Kubernetes Deployment/Pod now. Docker Desktop is still required
 # because minikube's docker driver runs the cluster's node AS a Docker
 # container; this check exists for that, not for the app.
 if ! command -v docker >/dev/null 2>&1; then
-    echo "未检测到 docker 命令，正在通过 Homebrew 安装最新版 Docker Desktop..."
+    echo "docker command not detected, installing latest Docker Desktop via Homebrew..."
     brew install --cask docker
     record "docker_cask_installed_by_script=1"
 else
-    echo "docker 命令已存在，跳过安装"
+    echo "docker command already exists, skipping installation"
 fi
 
-echo "==> 检查 Docker 守护进程是否在运行（minikube 的 docker driver 需要）"
+echo "==> Checking if Docker daemon is running (required by minikube's docker driver)"
 if ! docker info >/dev/null 2>&1; then
-    echo "Docker 守护进程未运行，尝试启动 Docker Desktop..."
+    echo "Docker daemon not running, attempting to start Docker Desktop..."
     open -a Docker >/dev/null 2>&1 || true
-    echo "等待 Docker 启动（最多 60 秒）..."
+    echo "Waiting for Docker to start (up to 60 seconds)..."
     for _ in $(seq 1 30); do
         docker info >/dev/null 2>&1 && break
         sleep 2
     done
     if ! docker info >/dev/null 2>&1; then
-        echo "警告: Docker 仍未就绪，请手动打开 Docker Desktop 后重新运行本脚本。"
+        echo "Warning: Docker still not ready, please manually open Docker Desktop and re-run this script."
     fi
 else
-    echo "Docker 守护进程运行正常"
+    echo "Docker daemon running normally"
 fi
 
-echo "==> 检查 Ollama"
+echo "==> Checking Ollama"
 if ! command -v ollama >/dev/null 2>&1; then
-    echo "未检测到 ollama 命令，正在通过 Homebrew 安装最新版..."
+    echo "ollama command not detected, installing latest version via Homebrew..."
     brew install ollama
     record "ollama_installed_by_script=1"
 else
-    echo "ollama 命令已存在，跳过安装"
+    echo "ollama command already exists, skipping installation"
 fi
 
-echo "==> 检查 Ollama 服务是否在运行"
+echo "==> Checking if Ollama service is running"
 if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
-    echo "Ollama 服务未运行，正在后台启动 (ollama serve)..."
+    echo "Ollama service not running, starting in background (ollama serve)..."
     # OLLAMA_NUM_PARALLEL=3 lets the server actually generate for up to 3
     # concurrent agents (dashboard.py); without it the demo still works,
     # LLM calls just serialize while agents' container commands still overlap.
     OLLAMA_NUM_PARALLEL=3 nohup ollama serve >"$PROJECT_DIR/.ollama_serve.log" 2>&1 &
     echo $! > "$OLLAMA_PID_FILE"
     record "ollama_server_started_by_script=1"
-    echo "等待 Ollama 启动（最多 30 秒）..."
+    echo "Waiting for Ollama to start (up to 30 seconds)..."
     for _ in $(seq 1 15); do
         curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1 && break
         sleep 2
     done
     if ! curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
-        echo "警告: Ollama 服务仍未就绪，请手动运行 'ollama serve' 后重新运行本脚本。"
+        echo "Warning: Ollama service still not ready, please manually run 'ollama serve' and re-run this script."
     fi
 else
-    echo "Ollama 服务运行正常"
+    echo "Ollama service running normally"
 fi
 
-echo "==> 检查模型 $OLLAMA_MODEL"
+echo "==> Checking model $OLLAMA_MODEL"
 if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$OLLAMA_MODEL"; then
-    echo "本地没有 $OLLAMA_MODEL，正在下载（体积几 GB，视网速可能需要几分钟）..."
+    echo "$OLLAMA_MODEL not available locally, downloading (several GB, may take a few minutes depending on network speed)..."
     ollama pull "$OLLAMA_MODEL"
     record "ollama_model_pulled=$OLLAMA_MODEL"
 else
-    echo "$OLLAMA_MODEL 已存在，跳过下载"
+    echo "$OLLAMA_MODEL already exists, skipping download"
 fi
 
-echo "==> 检查 Kubernetes（mini_devin.py 和 dashboard.py 都必须要有，没有可用集群就什么都跑不起来）"
+echo "==> Checking Kubernetes (required by both mini_devin.py and dashboard.py, nothing works without an available cluster)"
 K8S_READY=1
 if ! command -v kubectl >/dev/null 2>&1; then
-    echo "未检测到 kubectl"
+    echo "kubectl not detected"
     K8S_READY=0
 elif ! command -v minikube >/dev/null 2>&1; then
-    echo "未检测到 minikube"
+    echo "minikube not detected"
     K8S_READY=0
 elif ! kubectl --context minikube cluster-info --request-timeout=5s >/dev/null 2>&1; then
-    echo "minikube 集群连不上（kubectl --context minikube cluster-info 失败）"
+    echo "minikube cluster not reachable (kubectl --context minikube cluster-info failed)"
     K8S_READY=0
 elif ! kubectl --context minikube get ingressclass nginx >/dev/null 2>&1; then
-    echo "minikube 集群里没有 ingress-nginx（kubectl get ingressclass nginx 失败）"
+    echo "ingress-nginx not found in minikube cluster (kubectl get ingressclass nginx failed)"
     K8S_READY=0
 fi
 if [ "$K8S_READY" = "0" ]; then
     cat <<'EOF'
-警告: Kubernetes 集群没就绪。CLI 和 dashboard 现在都依赖真实的 K8s Pod/Service/Ingress
-作为沙箱，没有可用集群，两者都跑不起来——这不是可选项。修复方式:
+Warning: Kubernetes cluster not ready. Both CLI and dashboard now rely on real K8s Pod/Service/Ingress
+as sandboxes; without an available cluster, neither will work — this is not optional. Fix with:
   minikube start --driver=docker && minikube addons enable ingress
-(本脚本不会自动安装/启动 minikube——集群的 driver、资源分配这些是机器相关的选择，
- 自动装或自动删都可能影响你机器上其它已经在跑的集群负载，所以这里只检查不动手。
- 修好之后重新运行一遍本脚本。)
+(This script does not automatically install/start minikube — cluster driver, resource allocation, etc. are
+ machine-specific choices; automatic installation or deletion could affect other cluster loads running on your
+ machine, so this script only checks without taking action. Fix and re-run this script.)
 EOF
 else
-    echo "kubectl/minikube/ingress-nginx 都正常"
+    echo "kubectl/minikube/ingress-nginx all normal"
 fi
 
-echo "==> 创建 Python 虚拟环境 ($VENV_DIR)"
+echo "==> Creating Python virtual environment ($VENV_DIR)"
 if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
     record "venv_created=1"
 else
-    echo "虚拟环境已存在，跳过创建"
+    echo "Virtual environment already exists, skipping creation"
 fi
 
-echo "==> 在虚拟环境中安装 Python 依赖"
+echo "==> Installing Python dependencies in virtual environment"
 "$VENV_DIR/bin/python3" -m pip install --upgrade pip
 "$VENV_DIR/bin/python3" -m pip install -r "$PROJECT_DIR/requirements.txt"
 
-echo "==> 检查 .env 配置文件"
+echo "==> Checking .env configuration file"
 if [ ! -f "$ENV_FILE" ]; then
     cat > "$ENV_FILE" <<EOF
 # mini-devin config. Everything here runs locally — no API key needed.
 OLLAMA_MODEL=$OLLAMA_MODEL
 EOF
     record "env_file_created=1"
-    echo "已创建 $ENV_FILE"
+    echo "Created $ENV_FILE"
 else
-    echo ".env 已存在，跳过创建"
+    echo ".env already exists, skipping creation"
 fi
 
 cat <<EOF
 
-安装完成。两条路都是真实的 Kubernetes Pod/Service/Ingress 沙箱:
-  单 agent（命令行）:
+Installation complete. Both paths use real Kubernetes Pod/Service/Ingress sandboxes:
+  Single agent (command line):
     source "$VENV_DIR/bin/activate"
-    python3 mini_devin.py "帮我写个网页并运行"
+    python3 mini_devin.py "write a webpage and run it"
 
-  多 agent 调度台（网页）:
+  Multi-agent dashboard (web):
     source "$VENV_DIR/bin/activate"
     python3 dashboard.py
-    然后打开 http://localhost:5050（dashboard 启动日志里会打印取 token 的命令）
+    Then open http://localhost:5050 (dashboard startup log will print the command to retrieve the token)
 
-卸载请运行 ./uninstall.sh（只会移除本脚本自己安装的东西）。
+To uninstall, run ./uninstall.sh (will only remove what this script installed).
 EOF

@@ -197,8 +197,8 @@ def test_max_seconds_stops_without_calling_llm_once_budget_is_exhausted():
     finally:
         md.time.monotonic = original_monotonic
 
-    assert "超过" in result
-    assert "2 次真实工具调用" in result
+    assert "Exceeded" in result
+    assert "real tool calls" in result
     # The 3rd LLM call must never happen once the budget is gone.
     assert completions.calls == 2
 
@@ -215,7 +215,7 @@ def test_max_seconds_treats_a_call_exception_near_the_deadline_as_timeout():
 
     result = agent.run("verify something", max_steps=5, max_seconds=0.01)
 
-    assert "超过" in result
+    assert "Exceeded" in result
     assert completions.calls == 1
 
 

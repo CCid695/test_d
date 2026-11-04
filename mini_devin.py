@@ -63,18 +63,19 @@ class AgentStopped(Exception):
 
 def build_system_instruction(url: str) -> str:
     return f"""\
-你是一个运行在沙箱容器里的编程助手（mini Devin）。
-你有两个工具：
-- run_command: 在沙箱内执行 shell 命令
-- write_file: 在沙箱内写文件
+You are a programming assistant running in a sandboxed container (mini Devin).
+You have two tools:
+- run_command: Execute shell commands inside the sandbox
+- write_file: Write files inside the sandbox
 
-沙箱内 {cfg.SANDBOX_PORT} 端口已经映射到 {url}。
-如果用户要求写网页并运行，请把静态文件写到 /app 目录下，
-然后用类似 `cd /app && nohup python3 -m http.server {cfg.SANDBOX_PORT} > /tmp/server.log 2>&1 &`
-的命令在后台启动一个 HTTP 服务器（注意加 & 后台运行，不要阻塞），
-最后告诉用户可以通过 {url} 访问。
-网页里引用其它文件（比如 style.css、图片）请用相对路径，不要以 / 开头。
-完成后用中文简要总结你做了什么。
+Port {cfg.SANDBOX_PORT} inside the sandbox is mapped to {url}.
+If the user asks you to write a webpage and run it, write static files to the /app directory,
+then start an HTTP server in the background using a command like
+`cd /app && nohup python3 -m http.server {cfg.SANDBOX_PORT} > /tmp/server.log 2>&1 &`
+(note: add & to run in the background, don't block),
+and finally tell the user they can access it via {url}.
+For other files referenced in the webpage (e.g. style.css, images), use relative paths, don't start with /.
+After completion, briefly summarize in English what you did.
 """
 
 
@@ -168,9 +169,9 @@ class Agent:
 
     def write_file(self, path: str, content: str) -> str:
         self._check_stop()
-        self.log(f"[write_file] {path} ({len(content)} 字节)")
+        self.log(f"[write_file] {path} ({len(content)} bytes)")
         self.sandbox.put_archive(_build_tar(path, content))
-        return f"已写入 {path}"
+        return f"Wrote {path}"
 
     def _build_messages(self, task: str, extra_system: str = None) -> list:
         """Build the initial message list for the LLM conversation."""
@@ -243,9 +244,10 @@ class Agent:
     def _build_nudge_message(self, tool_call_count: int, nudge: str = None) -> str:
         """Build a nudge message when the model tries to stop early."""
         return nudge or (
-            f"你只实际调用了 {tool_call_count} 次工具，还没有真的完成要求的验证步骤。"
-            "不要在文字里描述你「做了」什么——必须真的调用 run_command/write_file，"
-            "用工具的真实返回结果作为依据，再给出结论。"
+            f"You have only actually called tools {tool_call_count} times, "
+            "and haven't really completed the required verification steps. "
+            "Don't describe in text what you 'did' — you must actually call run_command/write_file, "
+            "use the real return results from the tools as evidence, then reach a conclusion."
         )
 
     def run(self, task: str, max_steps: int = MAX_STEPS, extra_system: str = None,
@@ -279,8 +281,8 @@ class Agent:
 
             message, timed_out = self._make_llm_call(messages, max_seconds, start)
             if timed_out:
-                return (f"(超过 {max_seconds:.0f} 秒时间上限，已停止验证；"
-                         f"期间完成了 {tool_call_count} 次真实工具调用)")
+                return (f"(Exceeded {max_seconds:.0f} second time limit, verification stopped; "
+                         f"completed {tool_call_count} real tool calls during this time)")
 
             messages.append(message.model_dump(exclude_none=True))
 
@@ -330,7 +332,7 @@ def run_agent_loop(task: str) -> str:
 
 
 def main():
-    task = sys.argv[1] if len(sys.argv) > 1 else "帮我写个网页并运行"
+    task = sys.argv[1] if len(sys.argv) > 1 else "write a webpage and run it"
 
     import k8s_backend as kb
     port_forward = kb.IngressPortForward()

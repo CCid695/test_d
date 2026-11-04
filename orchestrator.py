@@ -35,55 +35,54 @@ _TERMINAL_STATUSES = _FAILED_STATUSES | {"done"}
 # - "collaborate": one project split into exactly 3 AI-named roles sharing
 #   ONE sandbox (so later roles can see/keep building on earlier roles'
 #   files), with an automatic verifying integrator at the end.
-PLANNER_PROMPT = """你是任务规划器。根据用户任务，从三种执行方式里选一种：
-1. "serial"：由一个助手在一个沙箱里从头做到尾，按顺序完成多个步骤。大多数任务都应该选这个——
-   任务简单、步骤是一条线（写代码→装依赖→启动→测试）、或者拿不准时，都选 "serial"。
-2. "parallel"：任务由几个【互相无关】的独立成果组成（比如三个主题不同的网页）。
-   每个子任务会在一个【独立、互不相通】的沙箱容器里完成，彼此看不到文件或结果，最后也不合并。
-   只有子任务之间不共享文件、不依赖彼此输出、没有先后顺序时，才选这个。
-3. "collaborate"：任务是【同一个项目】，但明显能拆成三块分量相当、需要不同分工的工作
-   （比如 接口设计 + 前端 + 后端）。三个角色共用【同一个沙箱】，能看到、能继续操作彼此的文件；
-   全部完成后系统会自动安排一个整合者验收并汇报，所以角色里不要再安排"整合/汇总/验收"这种角色。
+PLANNER_PROMPT = """You are a task planner. Based on the user's task, choose one of three execution modes:
+1. "serial": One assistant completes everything from start to finish in one sandbox, executing multiple steps in sequence. Most tasks should choose this — when the task is simple, steps are linear (write code → install dependencies → start → test), or when you're unsure, choose "serial".
+2. "parallel": The task consists of several [mutually unrelated] independent deliverables (e.g., three webpages on different topics).
+   Each subtask is completed in a [separate, isolated] sandbox container; they cannot see each other's files or results, and nothing is merged at the end.
+   Only choose this when subtasks don't share files, don't depend on each other's output, and have no order dependencies.
+3. "collaborate": The task is [one project] that can be clearly split into three substantial parts requiring different skills
+   (e.g., interface design + frontend + backend). All three roles share [one sandbox], can see and continue operating on each other's files;
+   after completion, the system automatically arranges an integrator to verify and report, so don't include "integration/summary/verification" roles among the roles.
 
-判断顺序：
-- 几个成果之间毫无关系、不共享文件、不需要合并结果？→ "parallel"
-- 同一个项目，能自然拆成三块、每块都有实打实的工作量？→ "collaborate"
-- 其它所有情况，或者拿不准 → "serial"
+Decision order:
+- Are the deliverables completely unrelated, don't share files, and don't need merged results? → "parallel"
+- Is it one project that can naturally split into three parts, each with substantial work? → "collaborate"
+- All other cases, or when unsure → "serial"
 
-parallel/serial 只输出：
-{"mode": "parallel" 或 "serial", "reason": "一句话理由", "subtasks": ["...", "..."]}
-parallel 最多 %d 个子任务；serial 的 subtasks 是按顺序执行的步骤。
+For parallel/serial, only output:
+{"mode": "parallel" or "serial", "reason": "one-sentence reason", "subtasks": ["...", "..."]}
+Parallel allows at most %d subtasks; serial's subtasks are steps executed in sequence.
 
-collaborate 规则：
-- 必须正好 3 个角色，按执行顺序列出，角色名由你根据任务起（2~6 个字）。
-- depends_on 写这个角色必须等哪些角色先完成（写角色名），只能写排在它前面的角色；
-  可以同时进行的角色之间不要互相写进 depends_on；第一个角色的 depends_on 必须是 []。
-- 需要在 8000 端口启动服务时，只能写进【最后一个】角色的任务里，其它角色不要启动服务，
-  避免多个角色同时抢占端口。
-collaborate 只输出：
-{"mode": "collaborate", "reason": "一句话理由", "roles": [{"name": "...", "task": "...", "depends_on": []}, ...]}
+For collaborate rules:
+- Must have exactly 3 roles, listed in execution order; role names are created by you based on the task (2-6 characters).
+- depends_on lists which roles this role must wait for (write role names); can only list roles that come before it;
+  Don't list concurrently executable roles in each other's depends_on; the first role's depends_on must be [].
+- When a service needs to start on port 8000, only include it in the [last] role's task; other roles should not start services,
+  to avoid multiple roles competing for the port.
+For collaborate, only output:
+{"mode": "collaborate", "reason": "one-sentence reason", "roles": [{"name": "...", "task": "...", "depends_on": []}, ...]}
 
-只输出 JSON，不要输出其它文字。
+Only output JSON, don't output any other text.
 
-示例 1（parallel）：
-用户任务："写三个互不相关的静态网页：一个猫网页、一个狗网页、一个天气网页"
-{"mode": "parallel", "reason": "三个网页互不依赖、互不共享文件，可以分别独立完成", "subtasks": ["写一个关于猫的静态网页并运行", "写一个关于狗的静态网页并运行", "写一个天气主题的静态网页并运行"]}
+Example 1 (parallel):
+User task: "Write three unrelated static webpages: a cat webpage, a dog webpage, a weather webpage"
+{"mode": "parallel", "reason": "Three webpages are independent and don't share files, can be completed separately", "subtasks": ["Write a static webpage about cats and run it", "Write a static webpage about dogs and run it", "Write a weather-themed static webpage and run it"]}
 
-示例 2（serial）：
-用户任务："写一个 Flask 接口，装好依赖，跑起来，再测试一下能不能访问"
-{"mode": "serial", "reason": "后面的步骤依赖前面步骤产出的同一个项目，必须在同一个容器里按顺序完成", "subtasks": ["编写 Flask 应用代码", "安装 Flask 依赖", "启动服务", "请求接口验证能否访问"]}
+Example 2 (serial):
+User task: "Write a Flask API, install dependencies, run it, then test if it's accessible"
+{"mode": "serial", "reason": "Later steps depend on the same project produced by earlier steps, must be completed sequentially in the same container", "subtasks": ["Write Flask application code", "Install Flask dependencies", "Start service", "Request API to verify accessibility"]}
 
-示例 3（collaborate，有分叉依赖）：
-用户任务："做一个留言板网站：Flask 后端提供留言的查看和提交接口，前端页面能查看和提交留言，由 Flask 提供页面并在 8000 端口运行"
-{"mode": "collaborate", "reason": "同一个项目，接口设计、前端、后端三块工作量相当；前端和后端都只依赖接口设计，彼此可以同时进行", "roles": [
- {"name": "接口设计", "task": "在 /app/API.md 写清楚留言接口：路径、方法、请求和返回的 JSON 格式", "depends_on": []},
- {"name": "前端", "task": "按 /app/API.md 编写 /app/static/index.html，用 fetch 调用接口查看和提交留言", "depends_on": ["接口设计"]},
- {"name": "后端", "task": "按 /app/API.md 编写 /app/app.py（Flask，数据存内存，/ 返回 static/index.html，结尾必须有 app.run(host='0.0.0.0', port=8000)），pip 安装 flask，用 nohup ... & 在后台启动", "depends_on": ["接口设计"]}
+Example 3 (collaborate, with forked dependencies):
+User task: "Create a message board website: Flask backend provides message viewing and submission interfaces, frontend page can view and submit messages, served by Flask on port 8000"
+{"mode": "collaborate", "reason": "One project with three substantial parts: interface design, frontend, backend; frontend and backend both depend only on interface design, can run concurrently", "roles": [
+ {"name": "interface design", "task": "In /app/API.md, clearly document the message API: paths, methods, request and response JSON formats", "depends_on": []},
+ {"name": "frontend", "task": "Based on /app/API.md, write /app/static/index.html, use fetch to call the API to view and submit messages", "depends_on": ["interface design"]},
+ {"name": "backend", "task": "Based on /app/API.md, write /app/app.py (Flask, data stored in memory, / returns static/index.html, must end with app.run(host='0.0.0.0', port=8000)), pip install flask, start in background with nohup ... &", "depends_on": ["interface design"]}
 ]}
 
-示例 4（看起来能拆，但应该 serial）：
-用户任务："写一个计算器网页并运行"
-{"mode": "serial", "reason": "一个小网页，一个助手直接做更快，拆分只会增加协调成本", "subtasks": ["编写计算器网页", "启动 HTTP 服务"]}
+Example 4 (looks like it could be split, but should be serial):
+User task: "Write a calculator webpage and run it"
+{"mode": "serial", "reason": "A small webpage, one assistant doing it directly is faster, splitting only adds coordination cost", "subtasks": ["Write calculator webpage", "Start HTTP service"]}
 """ % MAX_SUBTASKS
 
 
@@ -129,7 +128,7 @@ def _normalize_role_names(raw_names):
     seen = set()
     names = []
     for i, n in enumerate(raw_names):
-        n = n or f"角色{i + 1}"
+        n = n or f"role{i + 1}"
         if n in seen:
             n = f"{n}{i + 1}"
         seen.add(n)
@@ -234,12 +233,12 @@ def parse_plan(raw: str, task: str) -> Plan:
                     for r in raw_roles
                     if isinstance(r, dict) and str(r.get("task", "")).strip()
                 ]
-            new_reason = (reason or "collaborate 角色不完整") + "（协作计划不完整，改为单助手执行）"
+            new_reason = (reason or "collaborate roles incomplete") + " (collaboration plan incomplete, switching to single-agent execution)"
             return Plan("serial", new_reason, usable_tasks[:MAX_SUBTASKS] or [task])
 
         roles, forced_chain = parsed
         if forced_chain:
-            reason = (reason or "") + "（依赖关系无效，已改为依次执行）"
+            reason = (reason or "") + " (dependency graph invalid, changed to sequential execution)"
         return Plan("collaborate", reason, [r.task for r in roles], roles)
 
     subtasks = data.get("subtasks")
@@ -283,7 +282,7 @@ def plan_to_agent_tasks(plan: Plan, task: str):
     it would be treated like serial over plan.subtasks, as a safety net."""
     if plan.mode == "parallel":
         return [
-            (f"{sub}\n\n（这是总任务「{task}」的一个独立子任务，只需完成这一部分）", md.MAX_STEPS)
+            (f"{sub}\n\n(This is an independent subtask of the overall task \"{task}\", only complete this part)", md.MAX_STEPS)
             for sub in plan.subtasks
         ]
 
@@ -292,7 +291,7 @@ def plan_to_agent_tasks(plan: Plan, task: str):
         return [(task, md.MAX_STEPS)]
 
     numbered = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
-    serial_task = f"{task}\n\n请按以下步骤依次完成：\n{numbered}"
+    serial_task = f"{task}\n\nPlease complete the following steps in sequence:\n{numbered}"
     max_steps = min(md.MAX_STEPS + 3 * len(steps), 25)
     return [(serial_task, max_steps)]
 
@@ -315,7 +314,7 @@ class AgentRecord:
     stop_event: threading.Event = field(default_factory=threading.Event)
     future: Future = None
     kind: str = "worker"  # worker | role | integrator
-    role: str = None  # display name (role's own name, or "整合验收")
+    role: str = None  # display name (role's own name, or "integration and verification")
     depends_on: list = field(default_factory=list)  # agent ids
     sandbox_id: str = None  # set => this record shares the job's sandbox
     extra_system: str = None
@@ -389,10 +388,10 @@ INTEGRATOR_MIN_TOOL_CALLS = 3
 # logged. See Agent.run()'s max_seconds.
 INTEGRATOR_MAX_SECONDS = 360
 INTEGRATOR_NUDGE = (
-    "你还没有真的完成要求的验证步骤——不要在文字里描述你「已经」检查/启动/验证了什么，"
-    "必须真的调用 run_command/write_file，依据工具的真实返回结果判断，再给出结论。"
-    "请继续：依次检查文件内容（ls/cat）、进程是否在跑（/proc）、服务是否能访问（urlopen），"
-    "每一步都要有真实的工具调用和返回结果。"
+    "You haven't really completed the required verification steps — don't describe in text what you 'have' checked/started/verified, "
+    "you must actually call run_command/write_file, use the real return results from the tools as evidence, then reach a conclusion. "
+    "Please continue: check file contents (ls/cat), check if process is running (/proc), check if service is accessible (urlopen), "
+    "each step must have real tool calls and return results."
 )
 UPSTREAM_SUMMARY_LIMIT = 600
 ACTION_LOG_LIMIT = 12
@@ -401,31 +400,31 @@ ACTION_LOG_LIMIT = 12
 def build_role_system(job_task: str, role_recs: list, idx: int) -> str:
     this_role = role_recs[idx]
     division = "\n".join(
-        f"- {r.role}{'（你负责的部分）' if i == idx else ''}：{r.task}"
+        f"- {r.role}{' (your part)' if i == idx else ''}: {r.task}"
         for i, r in enumerate(role_recs)
     )
     return f"""\
-你是多人协作中的「{this_role.role}」角色，共 {len(role_recs)} 人一起完成同一个总任务：
+You are the "{this_role.role}" role in a multi-person collaboration, {len(role_recs)} people working together on the same overall task:
 {job_task}
 
-分工如下（只做你自己负责的部分，不要重复或覆盖别人的工作）：
+Division of labor (only do your part, don't duplicate or overwrite others' work):
 {division}
 
-你和其他角色共用同一个沙箱，彼此能看到对方写的文件。开始前先用 run_command 执行
-`ls -R /app` 一类命令看看现在有什么，不要删除或整体覆盖不属于你这部分的文件。
-上游角色给你的总结可能不准确，以沙箱里实际存在的文件为准。
-如果你的任务不要求启动服务，就不要启动，避免和其他角色抢占端口。
-完成后用中文简要总结你做了什么、写了哪些文件。
+You share the same sandbox with other roles, and can see files written by each other. Before starting, use run_command to execute
+commands like `ls -R /app` to see what exists now, don't delete or completely overwrite files that don't belong to your part.
+Summaries from upstream roles may be inaccurate; use the files actually existing in the sandbox as the ground truth.
+If your task doesn't require starting a service, don't start one, to avoid competing for ports with other roles.
+After completion, briefly summarize in English what you did and which files you wrote.
 """
 
 
 def build_role_task(rec: "AgentRecord", upstream_recs: list) -> str:
     if not upstream_recs:
         return rec.task
-    parts = [rec.task, "", "依赖的上游角色结果："]
+    parts = [rec.task, "", "Results from upstream roles:"]
     for up in upstream_recs:
         summary = (up.result or "")[:UPSTREAM_SUMMARY_LIMIT]
-        parts.append(f"- {up.role}（{up.status}）：{summary}")
+        parts.append(f"- {up.role} ({up.status}): {summary}")
     return "\n".join(parts)
 
 
@@ -473,36 +472,36 @@ def count_verification_categories(logs: list) -> int:
 
 
 INTEGRATOR_SYSTEM = """\
-你是整合与验收角色。其他角色的自述【不可信】：之前多次出现"声称服务已启动/已测试"但实际上
-从未执行启动命令、或代码缺少 app.run() 的情况。你必须亲自用 run_command 验证后才能下结论：
-1. ls -la /app（及子目录），cat 关键文件，检查内容是否完整（例如 Flask 应用结尾是否有
-   app.run(host='0.0.0.0', port=8000)）。
-2. 查看进程（沙箱里没有 ps 命令）：
+You are the integration and verification role. Other roles' self-reports are [untrustworthy]: we've seen multiple cases where they "claimed the service was started/has been tested" but in reality
+never executed the startup command, or the code is missing app.run(). You must personally verify using run_command before reaching conclusions:
+1. ls -la /app (and subdirectories), cat key files, check if content is complete (e.g., does the Flask application end with
+   app.run(host='0.0.0.0', port=8000)).
+2. Check processes (no ps command in the sandbox):
    for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -v '^$'
-3. 请求服务验证是否真的能访问（沙箱里没有 curl）：
+3. Request service to verify if it's actually accessible (no curl in the sandbox):
    python3 -c "import urllib.request as u; r=u.urlopen('http://127.0.0.1:8000/', timeout=5); print(r.status); print(r.read(300))"
-发现小问题（服务没启动、代码缺 app.run 之类）可以直接修复并重新验证，不需要重写整个项目。
-最终用中文报告，包含：
-- 最终交付：用户应该如何访问/使用
-- 验证结果：逐项写【通过】或【失败】，并附上你实际运行的命令和关键输出
-- 你做的修复（如果有）
-- 未完成的部分（包括失败或被跳过的角色）
-没有亲自运行命令验证过的内容，不允许写"已完成"。
+For minor issues (service not started, code missing app.run, etc.), you can fix them directly and re-verify, no need to rewrite the entire project.
+Finally report in English, including:
+- Final deliverable: how the user should access/use it
+- Verification results: write [PASS] or [FAIL] for each item, and attach the commands you actually ran and key outputs
+- Fixes you made (if any)
+- Unfinished parts (including failed or skipped roles)
+Content not personally verified by running commands is not allowed to be marked as "completed".
 """
 
 
 def build_integrator_task(job_task: str, role_recs: list) -> str:
-    parts = [f"总任务：{job_task}", "", "各角色情况（自述内容仅供参考，不可直接采信）："]
+    parts = [f"Overall task: {job_task}", "", "Status of each role (self-reported content is for reference only, not to be directly trusted):"]
     for rec in role_recs:
-        summary = (rec.result or "(无)")[:UPSTREAM_SUMMARY_LIMIT]
-        parts.append(f"\n角色「{rec.role}」— 状态: {rec.status}")
-        parts.append(f"任务: {rec.task}")
-        parts.append(f"自述结果: {summary}")
+        summary = (rec.result or "(none)")[:UPSTREAM_SUMMARY_LIMIT]
+        parts.append(f"\nRole \"{rec.role}\" — Status: {rec.status}")
+        parts.append(f"Task: {rec.task}")
+        parts.append(f"Self-reported result: {summary}")
         actions = extract_actions(rec.logs)
         if actions:
-            parts.append("来自系统日志，可信的操作记录:")
+            parts.append("From system logs, trustworthy operation records:")
             parts.extend(f"  {a}" for a in actions)
-    parts.append("\n请验证以上内容，完成整合与验收，并按要求格式输出最终报告。")
+    parts.append("\nPlease verify the above content, complete integration and verification, and output the final report in the required format.")
     return "\n".join(parts)
 
 
@@ -694,12 +693,12 @@ class Orchestrator:
             id=integrator_id,
             job_id=job.id,
             container_name=shared_name,
-            task="整合与验收",
+            task="integration and verification",
             max_steps=INTEGRATOR_MAX_STEPS,
             status="waiting",
             created_at=time.time(),
             kind="integrator",
-            role="整合验收",
+            role="integration and verification",
             depends_on=[rec.id for rec in role_recs],
             sandbox_id=sandbox_id,
             min_tool_calls=INTEGRATOR_MIN_TOOL_CALLS,
@@ -744,7 +743,7 @@ class Orchestrator:
             dep_statuses = [d.status for d in deps]
             if any(s in _FAILED_STATUSES for s in dep_statuses):
                 rec.status = "skipped"
-                rec.result = "上游角色未成功完成，已跳过"
+                rec.result = "Upstream role did not complete successfully, skipped"
                 rec.finished_at = time.time()
             elif all(s == "done" for s in dep_statuses):
                 self._launch_locked(rec, build_role_task(rec, deps))
@@ -760,7 +759,7 @@ class Orchestrator:
             integrator.status = "skipped"
             integrator.finished_at = time.time()
             job.final_status = "failed"
-            job.final_result = "所有角色都未成功完成，未进行整合"
+            job.final_result = "All roles did not complete successfully, integration not performed"
 
     def _launch_locked(self, rec: AgentRecord, prompt: str):
         if self._closed:

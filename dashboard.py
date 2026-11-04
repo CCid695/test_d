@@ -77,14 +77,14 @@ def main():
 
     token = kb.get_or_create_dashboard_token()
     print(
-        "[dashboard] 获取 dashboard token:\n"
+        "[dashboard] Get dashboard token:\n"
         f"  kubectl --context {kb.KUBE_CONTEXT} -n {kb.NAMESPACE} get secret "
         f"{kb.TOKEN_SECRET_NAME} -o jsonpath='{{.data.token}}' | base64 -d"
     )
 
     port_forward = kb.IngressPortForward()
     port_forward.start()
-    print(f"[dashboard] 已启动 kubectl port-forward，agent 页面入口: http://localhost:{kb.INGRESS_LOCAL_PORT}/agents/<id>/")
+    print(f"[dashboard] Started kubectl port-forward, agent page entry: http://localhost:{kb.INGRESS_LOCAL_PORT}/agents/<id>/")
 
     orch = Orchestrator(
         run_fn=make_run_fn(kb.sandbox_factory),

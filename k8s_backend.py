@@ -52,9 +52,9 @@ def init():
             config.load_kube_config(context=KUBE_CONTEXT, client_configuration=cfg)
         except Exception as exc:
             raise RuntimeError(
-                f"无法加载 kubeconfig（context={KUBE_CONTEXT}）：{exc}。"
-                f"确认 `kubectl --context {KUBE_CONTEXT} cluster-info` 能连上，"
-                f"或者设置 MINI_DEVIN_BACKEND=docker 改用 Docker 后端。"
+                f"Unable to load kubeconfig (context={KUBE_CONTEXT}): {exc}. "
+                f"Verify `kubectl --context {KUBE_CONTEXT} cluster-info` can connect, "
+                f"or set MINI_DEVIN_BACKEND=docker to use Docker backend."
             ) from exc
         _base_configuration = cfg
         api_client = client.ApiClient(cfg)
@@ -246,11 +246,11 @@ class K8sSandbox:
             if exc.status != 409:
                 raise
 
-        log(f"[sandbox] 创建 Deployment/Service/Ingress {self.name}，等待 Pod 就绪…")
+        log(f"[sandbox] Creating Deployment/Service/Ingress {self.name}, waiting for Pod to be ready...")
         self._wait_for_pod(log, should_stop)
 
         url = agent_url(self.agent_id)
-        log(f"[sandbox] Pod {self._pod_name} 已就绪，{url}")
+        log(f"[sandbox] Pod {self._pod_name} is ready, {url}")
         return url
 
     def _wait_for_pod(self, log, should_stop):
@@ -277,7 +277,7 @@ class K8sSandbox:
 
             now = time.time()
             if waiting_reason and now - last_log > 10:
-                log(f"[sandbox] 等待 Pod 就绪…（{waiting_reason}）")
+                log(f"[sandbox] Waiting for Pod to be ready... ({waiting_reason})")
                 last_log = now
             time.sleep(1)
 
@@ -309,7 +309,7 @@ class K8sSandbox:
         if exit_code is None:
             # Usual cause: the model started a server with `&` but forgot to
             # redirect its output, so the exec session never sees EOF.
-            output += f"\n(命令在 {EXEC_TIMEOUT_S} 秒后仍未结束，输出已截断)"
+            output += f"\n(Command did not finish after {EXEC_TIMEOUT_S} seconds, output truncated)"
         return exit_code, output
 
     def put_archive(self, tar_bytes: bytes):

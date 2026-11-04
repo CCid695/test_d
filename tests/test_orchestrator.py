@@ -366,10 +366,10 @@ def test_collaborate_respects_dependencies():
     wait_until(lambda: agent_by_role(orch, "A")["status"] == "running")
     assert agent_by_role(orch, "B")["status"] == "waiting"
     assert agent_by_role(orch, "C")["status"] == "waiting"
-    assert agent_by_role(orch, "整合验收")["status"] == "waiting"
+    assert agent_by_role(orch, "integration and verification")["status"] == "waiting"
 
     gate_a.set()
-    wait_until(lambda: agent_by_role(orch, "整合验收")["status"] == "done")
+    wait_until(lambda: agent_by_role(orch, "integration and verification")["status"] == "done")
 
     assert state["peak"] == 2  # B and C really overlapped, not just "allowed to"
     assert "A-RESULT" in prompts["B"]
@@ -426,8 +426,8 @@ def test_upstream_error_skips_dependents_integrator_still_runs():
     assert agent_by_role(orch, "B")["status"] == "skipped"
     assert agent_by_role(orch, "C")["status"] == "done"
     assert "B" not in calls  # the dependent itself never actually ran
-    assert agent_by_role(orch, "整合验收")["status"] == "done"
-    assert "skipped" in captured["整合验收"]
+    assert agent_by_role(orch, "integration and verification")["status"] == "done"
+    assert "skipped" in captured["integration and verification"]
 
 
 def test_all_roles_fail_skips_integrator():
@@ -446,7 +446,7 @@ def test_all_roles_fail_skips_integrator():
 
     wait_until(lambda: len(orch.snapshot()["agents"]) == 4)
     wait_until(lambda: orch.snapshot()["jobs"][0]["final_status"] == "failed")
-    assert "整合验收" not in calls
+    assert "integration and verification" not in calls
     assert orch.snapshot()["jobs"][0]["final_result"] is not None
 
 
@@ -476,7 +476,7 @@ def test_stop_waiting_role_cascades_skip_to_dependent():
     wait_until(lambda: agent_by_role(orch, "C")["status"] == "skipped")
 
     gate_a.set()
-    wait_until(lambda: agent_by_role(orch, "整合验收")["status"] == "done")
+    wait_until(lambda: agent_by_role(orch, "integration and verification")["status"] == "done")
     assert orch.snapshot()["jobs"][0]["final_status"] == "done"  # A succeeded, so integrator still ran
 
 
@@ -497,16 +497,16 @@ def test_stop_waiting_integrator_sets_final_status_without_running():
     orch.submit("t")
 
     wait_until(lambda: len(orch.snapshot()["agents"]) == 4)
-    assert agent_by_role(orch, "整合验收")["status"] == "waiting"
-    orch.stop(agent_by_role(orch, "整合验收")["id"])
-    assert agent_by_role(orch, "整合验收")["status"] == "stopped"
+    assert agent_by_role(orch, "integration and verification")["status"] == "waiting"
+    orch.stop(agent_by_role(orch, "integration and verification")["id"])
+    assert agent_by_role(orch, "integration and verification")["status"] == "stopped"
 
     gate.set()
     wait_until(lambda: all(agent_by_role(orch, r)["status"] == "done" for r in ("A", "B", "C")))
     time.sleep(0.2)  # give _advance_job_locked a chance to (wrongly) relaunch it, if it would
 
-    assert agent_by_role(orch, "整合验收")["status"] == "stopped"
-    assert "整合验收" not in calls
+    assert agent_by_role(orch, "integration and verification")["status"] == "stopped"
+    assert "integration and verification" not in calls
     assert orch.snapshot()["jobs"][0]["final_status"] == "stopped"
 
 
